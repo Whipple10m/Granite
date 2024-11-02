@@ -1,0 +1,1060 @@
+
+   MODULE GXF
+
+      USE FORMS 
+      USE ISO_VARYING_STRING 
+      USE GON 
+      USE GIM  
+      USE GMO 
+      USE GKU 
+      USE GDF 
+      USE GOS 
+
+   INTEGER, PARAMETER :: &
+     gr_screen_wp = 1280,&  !  screen width  [pixel]  */
+     gr_screen_hp = 1024,&  !  screen height [pixel]  */
+     gr_border_tp =   31,&  !  border top    [pixel]  */
+     gr_border_bp =    4,&  !  border botto  [pixel]  */
+     gr_border_lp =    4,&  !  border left   [pixel]  */
+     gr_border_rp =    4,&  !  border right  [pixel]  */
+     gr_ctrl_wp   =  500,&  !  control window width  [pixel]  */
+     gr_ctrl_hp   =  200,&  !  control window height [pixel]  */
+     gr_input_wp  =  500,&  !  input window width    [pixel]  */
+     gr_input_hp  =  310,&  !  input window height   [pixel]  */
+     gr_comm_wp   =  500,&  !  comment window width  [pixel]  */
+     gr_comm_hp   =  310,&  !  comment window height [pixel]  */
+     gr_run_wp    =  500,&  !  run window width      [pixel]  */
+     gr_run_hp    =  125,&  !  run window height     [pixel]  */
+     gr_master_wp =  500,&  !  master window width   [pixel]  */
+     gr_master_hp =   80,&  !  master window height  [pixel]  */
+     gr_disp_wp   =  500,&  !  display window width  [pixel]  */
+     gr_disp_hp   =  130,&  !  display window height [pixel]  */
+     gr_histo_wp  =  500,&  !  histogram control width  [pixel]  */
+     gr_histo_hp  =  130,&  !  histogram control height [pixel]  */
+     gr_higz_wp   =  750,&  !  Higz window width     [pixel]  */
+     gr_higz_hp   =  987,&  !  Higz window height    [pixel]  */
+     gr_runno_wp  =  450,&  !  run number window width  [pixel]  */
+     gr_runno_hp  =  125    !  run number window height [pixel]  */
+
+  TYPE :: run_form_fields 
+    INTEGER(FO) run 
+    INTEGER(FO) utc_date 
+    INTEGER(FO) utc_time 
+    INTEGER(FO) utc_start 
+    INTEGER(FO) utc_end 
+    INTEGER(FO) sid_len 
+    INTEGER(FO) showcomm
+    INTEGER(FO) hidecomm
+    INTEGER(FO) duration 
+    INTEGER(FO) cycle 
+    INTEGER(FO) utcstart 
+    INTEGER(FO) utcstop 
+!   INTEGER(FO) pointing 
+    INTEGER(FO) sidstart 
+  END TYPE 
+  TYPE(RUN_FORM_FIELDS) :: runff 
+
+TYPE :: comm_form_fields 
+    INTEGER(FO) sky 
+    INTEGER(FO) observer 
+    INTEGER(FO) comment 
+    INTEGER(FO) tubes_off 
+  END TYPE 
+  TYPE(COMM_FORM_FIELDS) :: commff 
+
+  INTEGER(FO) gr_disp_form 
+  INTEGER(FO) gr_histo_form 
+  INTEGER(FO) gr_input_form 
+  INTEGER(FO) gr_run_form  
+  INTEGER(FO) gr_ctrl_form
+  INTEGER(FO) gr_master_form;
+  INTEGER(FO) gr_runno_form;
+  INTEGER(FO) gr_comm_form;
+
+  INTEGER(FO) gr_input_line 
+  INTEGER(FO) gr_input_out 
+  INTEGER(FO) gr_runno_number 
+
+  INTEGER(FO) disp_freeze
+  INTEGER(FO) disp_continue
+
+  INTEGER, PARAMETER :: & 
+    gr_ctrl_on    = 1, & 
+    gr_ctrl_off   = 2, &
+    gr_ctrl_track = 3, &
+    gr_ctrl_n2    = 4, &
+    gr_ctrl_ped   = 5, &
+    gr_ctrl_test  = 6, &
+    gr_ctrl_stop  = 7, &
+    gr_ctrl_panic = 8 
+
+  INTEGER, PARAMETER :: & 
+    gr_histo_rate=1, &  
+    gr_histo_adc =2
+
+  INTEGER, PARAMETER :: & 
+    gr_master_exit  =1, & 
+!   gr_master_cmd   =2, &
+    gr_master_status=3, &
+!   gr_master_run   =4, & 
+    gr_master_histo =5, & 
+    gr_master_event =6, & 
+    gr_master_print =7 
+
+  INTEGER, PARAMETER :: & 
+    gr_disp_range   =1, &  
+    gr_disp_time    =2, &
+    gr_disp_adc     =3, &
+    gr_disp_signal  =4, &
+    gr_disp_pst     =5, &
+    gr_disp_nsb     =6, & 
+    gr_disp_sc_rate =7, &
+    gr_disp_ped_var =8, &
+    gr_disp_freeze  =9, &
+    gr_disp_continue=10
+
+  INTEGER, PARAMETER :: & 
+    gr_runno_accept =1, &  
+    gr_runno_cancel =2
+
+  INTEGER, PARAMETER :: & 
+    gr_run_sid_len  =1, &
+    gr_run_runno    =2, &
+    gr_run_duration =3, &
+    gr_run_cycle    =4, &
+    gr_run_showcomm =5, &
+    gr_run_hidecomm =6
+!    gr_run_pointing =8, &
+
+  INTEGER, PARAMETER :: & 
+    gr_comm_sky      =1, & 
+    gr_comm_observer =2, & 
+    gr_comm_comment  =3, &
+    gr_comm_tubes_off=4, &
+    gr_comm_reset    =5, &
+    gr_comm_send     =6
+
+    logical gr_run_refresh 
+
+      CONTAINS 
+
+!*******************************************************************************
+!     callbacks for for gr_input 
+!*******************************************************************************
+
+      SUBROUTINE gr_input_cb(obj,data)
+
+
+      IMPLICIT NONE      
+
+      INTEGER(FO)    OBJ 
+      INTEGER(LONG) DATA  
+      INTEGER       IERR 
+      TYPE(varying_string) STRING  
+ 
+      string = fo_get_input(loc(obj))
+
+      call gr_exec(char(string),ierr) 
+!      CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)                 ! request access 
+!      CALL KUEXEC(CHAR(STRING))                             ! exec command 
+!      CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)               ! give up lock 
+
+      CALL fo_addto_browser(gr_input_out, char(string))
+      CALL fo_set_input(gr_input_line,"")
+
+      END SUBROUTINE gr_input_cb
+
+!*******************************************************************************
+!     Create Command Window form 
+!*******************************************************************************
+
+      SUBROUTINE gr_create_input
+
+      IMPLICIT NONE 
+
+      INTEGER(FO) obj
+
+      gr_input_form &  
+          = fo_bgn_form(FL_NO_BOX, gr_input_wp, gr_input_hp)
+      obj = fo_add_box(FL_UP_BOX,0,0,gr_input_wp,gr_input_hp,"")
+      gr_input_line & 
+          = fo_add_input(FL_NORMAL_INPUT,25,255,450,30,"Command Input");
+      call fo_set_object_lalign(gr_input_line,FL_ALIGN_TOP)
+      call fo_set_object_callback(gr_input_line,gr_input_cb,0)
+      gr_input_out & 
+          = fo_add_browser(FL_NORMAL_BROWSER,25,25,450,205,"History")
+      call fo_set_object_lalign(gr_input_out,FL_ALIGN_TOP)
+      call fo_end_form()
+
+      return
+
+      END SUBROUTINE gr_create_input
+
+!*******************************************************************************
+!     Create Run Info Window Form      fws
+!*******************************************************************************
+
+     SUBROUTINE GXF_RUN_UPDATE
+
+!-------------------------------------------------------------------------------
+!    This function updates all the objects in the Run information and comment
+!    windows using the information in the GDF run structure  
+!-------------------------------------------------------------------------------
+
+
+
+     IMPLICIT NONE 
+
+     integer :: time(7), ierr  
+     INTEGER, PARAMETER :: year=1,month=2,day=3,hour=4,min=5,sec=6,nanosec=7
+     character(len=132) str
+     REAL*8 UTC 
+
+!-------------------------------------------------------------------------------
+!    output only fields
+!-------------------------------------------------------------------------------
+     write(str,"(A,I7)") "Run",GDF_RUN%RUN                    ! run number 
+     call fo_set_object_label(runff%run,trim(str))
+
+     CALL gos_UTC(UTC)                                        ! get UTC 
+     call gon_utc_idate(utc,time,ierr)                        !  UTC time  
+     write(str,"(3(A,I2))") &  
+     "UTC time  ",time(hour),":",time(min),":",time(sec)
+     call fo_set_object_label(runff%utc_time,trim(str))
+
+     call gon_utc_idate(gdf_run%utc,time,ierr)                ! UTC date 
+     write(str,'(2(A,I2),A,I4)') & 
+     "UTC date  ",time(day),"/",time(month),"/",time(year)
+     call fo_set_object_label(runff%utc_date,trim(str))
+
+     call gon_utc_idate(gdf_run%utc_start,time,ierr)          ! run start 
+     write(str,"(3(A,I2))") &  
+     "UTC start ",time(hour),":",time(min),":",time(sec)
+     call fo_set_object_label(runff%utcstart,trim(str))
+
+     call gon_utc_idate(gdf_run%utc_end,time,ierr)            ! end of run 
+     write(str,"(3(A,I2))") &  
+     "UTC end   ",time(hour),":",time(min),":",time(sec)
+     call fo_set_object_label(runff%utcstop,trim(str))
+
+!-------------------------------------------------------------------------------
+!    update input fileds ONLY if external file was read 
+!-------------------------------------------------------------------------------
+     if (gon_read_new.or.gr_run_refresh) then                   ! new data 
+
+       gr_run_refresh = .false.
+       gon_read_new   = .false.
+
+       write(str,"(F6.2)") gdf_run%sid_length(1)                ! run duration 
+       call fo_set_input(runff%duration,trim(str))
+
+       write(str,"(F6.2)") gdf_run%sid_cycle                    ! cycle time 
+       call fo_set_input(runff%cycle,trim(str))
+
+       call fo_set_input(commff%observer,trim(gdf_run%observer)) 
+
+       call fo_set_input(commff%comment,trim(gdf_run%comment))  
+
+       call fo_set_choice(commff%sky,gdf_run%sky_quality)
+
+     endif 
+
+     END SUBROUTINE gxf_run_update
+
+!*******************************************************************************
+
+       SUBROUTINE gr_run_cb(obj,data)
+
+!-------------------------------------------------------------------------------
+!      This function is the callback for the objects in the Run info window
+!-------------------------------------------------------------------------------
+       IMPLICIT NONE 
+
+       INTEGER(FO)   OBJ 
+       INTEGER(LONG) DATA 
+
+       CHARACTER(LEN=132) :: str 
+       CHARACTER(LEN=132) :: temp_string 
+       INTEGER number
+       INTEGER new_number
+       INTEGER IERR 
+
+       SELECT CASE(loc(data)) 
+       case (gr_run_runno) 
+         write(temp_string,"(I6)") GDF_RUN%RUN           ! current run number 
+         read(temp_string,"(I6)") number
+         new_number = number + 1
+         write(str,"(I6)") new_number
+         CALL fo_set_input(gr_runno_number,trim(str))
+         CALL fo_show_form(gr_runno_form,& 
+           FL_PLACE_GEOMETRY,FL_FULLBORDER,"Set the Run Number for the NEXT run")
+       case(gr_run_duration)
+         WRITE(str,*) char(fo_get_input(loc(obj)))
+         READ (str,*) gdf_run%sid_length(1)
+       case(gr_run_cycle)
+         WRITE(str,*) char(fo_get_input(loc(obj)))
+         READ (str,*) gdf_run%sid_cycle 
+       case (gr_run_showcomm) 
+         CALL fo_show_form(gr_comm_form,& 
+           FL_PLACE_GEOMETRY,FL_FULLBORDER,"GDF Comments")
+         CALL fo_hide_object(runff%showcomm)
+         CALL fo_show_object(runff%hidecomm)
+       case (gr_run_hidecomm) 
+         CALL fo_hide_form(gr_comm_form)
+         CALL fo_hide_object(runff%hidecomm)
+         CALL fo_show_object(runff%showcomm)
+!       case(gr_run_pointing)
+!
+      CASE default
+        return
+      END SELECT 
+
+      END SUBROUTINE gr_run_cb
+
+!*******************************************************************************
+
+      SUBROUTINE gr_create_run
+!-------------------------------------------------------------------------------
+!     This function creates the run information window 
+!-------------------------------------------------------------------------------
+
+      INTEGER(FO) obj
+
+      gr_run_form = fo_bgn_form(FL_FLAT_BOX, gr_run_wp, gr_run_hp)
+
+      runff%run=fo_add_button(FL_NORMAL_BUTTON,25,25,140,25,"Run")
+      CALL fo_set_object_callback(runff%run, gr_run_cb,gr_run_runno)
+
+      runff%duration=fo_add_input(FL_FLOAT_INPUT,105,50,60,25,"SID dur. [min]")
+      CALL fo_set_input(runff%duration,"28.0")
+      CALL fo_set_object_callback(runff%duration,gr_run_cb,gr_run_duration)
+
+      runff%cycle=fo_add_input(FL_FLOAT_INPUT,105,75,60,25,"SID cycle [min]")
+      CALL fo_set_input(runff.cycle,"2.0")
+      CALL fo_set_object_callback(runff%cycle, gr_run_cb, gr_run_cycle)
+
+      runff%utc_time= fo_add_box(FL_BORDER_BOX,180, 25,150,25,"UTC time ")
+      runff%utc_date= fo_add_box(FL_BORDER_BOX,180, 50,150,25,"UTC date ")
+      runff%showcomm=fo_add_button(FL_NORMAL_BUTTON,180,75,150,25,"SHOW Comments")
+      CALL fo_set_object_callback(runff%showcomm, gr_run_cb,gr_run_showcomm)
+      runff%hidecomm=fo_add_button(FL_NORMAL_BUTTON,180,75,150,25,"HIDE Comments")
+      CALL fo_set_object_callback(runff%hidecomm, gr_run_cb,gr_run_hidecomm)
+      CALL fo_hide_object(runff%hidecomm)
+      runff%sidstart= fo_add_box(FL_BORDER_BOX,345, 25,130,25,"SID start") 
+      runff%utcstart= fo_add_box(FL_BORDER_BOX,345, 50,130,25,"UTC start")
+      runff%utcstop = fo_add_box(FL_BORDER_BOX,345, 75,130,25,"UTC end  ")
+
+!      runff%pointing = & 
+!        fo_add_choice(FL_NORMAL_CHOICE2,350,148,60,30,"Pointing check?")
+!      call fo_set_object_callback(runff%pointing,gr_run_cb,gr_run_pointing)
+
+      call fo_end_form()
+
+!     call fo_addto_choice(runff%pointing,"yes|no")
+!     call fo_set_choice(runff%pointing,2)
+
+      END SUBROUTINE gr_create_run
+
+!*******************************************************************************
+
+       SUBROUTINE gr_runno_cb(obj,data)
+!-------------------------------------------------------------------------------
+!      This function is the callback for the Run Number window
+!-------------------------------------------------------------------------------
+
+       IMPLICIT NONE 
+
+       INTEGER(FO)   OBJ 
+       INTEGER(LONG) DATA 
+
+       CHARACTER(LEN=132) :: str 
+       CHARACTER(LEN=132) :: string 
+       CHARACTER(LEN=132) :: temp_string 
+       CHARACTER(LEN=132) :: number_string 
+       INTEGER IERR 
+       INTEGER number
+       INTEGER new_number
+
+
+       SELECT CASE(loc(data)) 
+
+       case (gr_runno_accept)
+         
+         write(temp_string,"(A)") char(fo_get_input(gr_runno_number))
+         read(temp_string,"(I7)") number
+         new_number = number - 1
+         write(number_string,"(I7)") new_number
+         write(string,"(A,A)") "run_number",trim(number_string)
+        
+         call fo_addto_browser(gr_input_out,string)
+         call gr_exec(string,ierr) 
+
+!         CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)                 ! request access 
+!         call kuexec(string)                                   ! exec command 
+!         CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)               ! give up access 
+
+         call fo_hide_form(gr_runno_form)
+    
+       case (gr_runno_cancel) 
+         call fo_hide_form(gr_runno_form)
+       
+       CASE default
+         return
+
+       END SELECT 
+
+       END SUBROUTINE gr_runno_cb
+
+!*******************************************************************************
+      SUBROUTINE gr_create_runno
+!-------------------------------------------------------------------------------
+!     This function creates the run number window 
+!-------------------------------------------------------------------------------
+
+      INTEGER(FO) OBJ
+
+      gr_runno_form = fo_bgn_form(FL_UP_BOX, gr_runno_wp, gr_runno_hp)
+      gr_runno_number=fo_add_input(FL_FLOAT_INPUT,170,25,110,25,"Run Number")
+      OBJ=fo_add_button(FL_NORMAL_BUTTON,100,75,85,25,"Accept")
+      CALL fo_set_object_callback(OBJ, gr_runno_cb,gr_runno_accept)
+      OBJ=fo_add_button(FL_NORMAL_BUTTON,265,75,85,25,"Cancel")
+      CALL fo_set_object_callback(OBJ, gr_runno_cb,gr_runno_cancel)
+      CALL fo_end_form()
+      
+      END SUBROUTINE gr_create_runno
+
+!*******************************************************************************
+       SUBROUTINE gr_comm_cb(obj,data)
+
+!-------------------------------------------------------------------------------
+!      This function is the callback for the Comments window
+!-------------------------------------------------------------------------------
+
+       IMPLICIT NONE 
+
+       INTEGER(FO)   OBJ 
+       INTEGER(LONG) DATA 
+
+       INTEGER IERR 
+
+       SELECT CASE(loc(data)) 
+
+       case(gr_comm_sky)
+         gdf_run%sky_quality=fo_get_choice(loc(obj))
+       case(gr_comm_observer)
+         GDF_RUN%OBSERVER = char(fo_get_input(commff%observer))
+       case(gr_comm_comment)
+         GDF_RUN%COMMENT = char(fo_get_input(commff%comment))
+         GDF_RUN%CLEN    = LEN_TRIM(GDF_RUN%COMMENT)
+       case(gr_comm_tubes_off)
+          
+       case(gr_comm_send)
+         GDF_RUN%OBSERVER = char(fo_get_input(commff%observer))
+         GDF_RUN%COMMENT  = char(fo_get_input(commff%comment))
+         GDF_RUN%CLEN     = LEN_TRIM(GDF_RUN%COMMENT)
+         CALL GOS_UTC(GDF_RUN%UTC)                            
+         gdf_run%valid = .TRUE.
+         gdf_run%NEW   = .TRUE.
+         CALL GON_WRITE(GDF_RUN,IERR)                         
+       case(gr_comm_reset)                         
+         GDF_RUN%COMMENT = ""
+         GDF_RUN%CLEN    = 0 
+         gdf_run%VALID   = .FALSE.
+         gdf_run%NEW     = .FALSE.
+         call fo_set_input(commff%comment, & 
+           " Press the SEND button to update the data file. ")
+       
+       CASE default
+         return
+
+       END SELECT 
+
+       END SUBROUTINE gr_comm_cb
+
+!*******************************************************************************
+      SUBROUTINE gr_create_comm
+!-------------------------------------------------------------------------------
+!     This function creates the comments window 
+!-------------------------------------------------------------------------------
+
+      INTEGER(FO) obj
+
+      gr_comm_form = fo_bgn_form(FL_UP_BOX, gr_comm_wp, gr_comm_hp)
+
+      commff%sky=fo_add_choice(FL_NORMAL_CHOICE2,100,25,100,25,"Sky quality")
+      call fo_set_object_callback(commff%sky,gr_comm_cb, gr_comm_sky)
+      commff%observer =fo_add_input(FL_NORMAL_INPUT,100,50,300,25,"Observers")
+      call fo_set_object_callback(commff%observer,gr_comm_cb, gr_comm_observer)
+      commff%tubes_off=fo_add_input(FL_NORMAL_INPUT,100,75,300,25,"Ignore tubes")
+      call fo_set_object_callback(commff%tubes_off, gr_comm_cb, gr_comm_tubes_off)
+
+      commff%comment=fo_add_input(FL_MULTILINE_INPUT,25,125,450,160,"Comments")
+      call fo_set_object_lalign(commff%comment,FL_ALIGN_TOP)
+      call fo_set_object_callback(commff%comment, gr_comm_cb, gr_comm_comment)
+
+      obj = fo_add_button(FL_NORMAL_BUTTON,425,25,50,25,"Send")
+      call fo_set_object_callback(obj,gr_comm_cb,gr_comm_send)
+      obj = fo_add_button(FL_NORMAL_BUTTON,425,75,50,25,"Reset")
+      call fo_set_object_callback(obj,gr_comm_cb,gr_comm_reset)
+
+      call fo_addto_choice(commff%sky,"good|medium|bad")
+      call fo_set_choice(commff%sky,3)
+
+      CALL fo_end_form()
+      
+      END SUBROUTINE gr_create_comm
+
+!*******************************************************************************
+      subroutine gr_ctrl_cb(obj,data)
+!-------------------------------------------------------------------------------
+!     callbacks for control buttons 
+!-------------------------------------------------------------------------------
+
+      implicit none 
+
+      INTEGER(FO)   OBJ 
+      INTEGER(LONG) DATA 
+      INTEGER i 
+      INTEGER IERR 
+
+    CHARACTER(LEN=132) string
+
+    CHARACTER(LEN=*),PARAMETER :: & 
+      panic      = "QUIT", & 
+      stop       = "EXEC GRANITE#STOP_RUN", & 
+      mode_on    = "EXEC GRANITE#START_RUN_ON", & 
+      mode_off   = "EXEC GRANITE#START_RUN_OFF", & 
+      mode_track = "EXEC GRANITE#START_RUN_TRACKING", & 
+      mode_n2    = "EXEC GRANITE#START_RUN_N2", & 
+      mode_ped   = "EXEC GRANITE#START_RUN_PED", & 
+      mode_test  = "EXEC GRANITE#START_RUN_TEST"
+
+    select case (loc(data))
+    case (gr_ctrl_panic) 
+      if (fo_show_question("Do you really want to Quit?",0)) THEN  
+        string = panic
+      else
+        return
+      endif 
+    case(gr_ctrl_stop) 
+      if (fo_show_question("Do you really want to stop the run?",0)) then  
+        string = stop
+      else
+        return
+      endif 
+    case(gr_ctrl_on) 
+      string = mode_on
+    case(gr_ctrl_off)
+      string = mode_off
+    case(gr_ctrl_track) 
+      string = mode_track
+    case(gr_ctrl_ped) 
+      string = mode_ped
+    case(gr_ctrl_n2) 
+      string = mode_n2
+    case(gr_ctrl_test) 
+      string = mode_test
+    case default
+      return
+    end select 
+  
+    call fo_addto_browser(gr_input_out,string)
+
+     call gr_exec(string,ierr) 
+
+!    CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)                 ! request access 
+!    call kuexec(string)                                   ! 
+!    CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)               ! give up lock 
+
+    gr_run_refresh = .true. 
+
+    end subroutine gr_ctrl_cb
+
+!*******************************************************************************
+!    Create Run Control buttons form 
+!*******************************************************************************
+  
+    subroutine gr_create_ctrl
+
+    INTEGER(FO) obj
+    INTEGER(FO) group 
+
+    gr_ctrl_form = fo_bgn_form(FL_UP_BOX,gr_ctrl_wp,gr_ctrl_hp)
+    group = fo_bgn_group()
+      obj = fo_add_box(FL_UP_BOX,25,25,345,150,"Start Run")
+      call fo_set_object_lalign(obj,FL_ALIGN_TOP)
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON, 50,50,85,40,"ON")
+      call fo_set_object_callback(obj,gr_ctrl_cb,gr_ctrl_on)
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON,155,50,85,40,"OFF")
+      call fo_set_object_callback(obj,gr_ctrl_cb,gr_ctrl_off)
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON,260,50,85,40,"TRACK")
+      call fo_set_object_callback(obj,gr_ctrl_cb,gr_ctrl_track)
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON, 50,110,85,40,"TEST")
+      call fo_set_object_callback(obj,gr_ctrl_cb,gr_ctrl_test)
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON,155,110,85,40,"N2")
+      call fo_set_object_callback(obj,gr_ctrl_cb,gr_ctrl_n2)
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON,260,110,85,40,"ZENITH")
+      call fo_set_object_callback(obj,gr_ctrl_cb,gr_ctrl_ped)
+    call fo_end_group()
+
+    obj = fo_add_button(FL_NORMAL_BUTTON,390,50,85,40,"STOP")
+    call fo_set_object_callback(obj,gr_ctrl_cb,gr_ctrl_stop)
+    obj = fo_add_button(FL_NORMAL_BUTTON,390,110,85,40,"PANIC")
+    call fo_set_object_callback(obj,gr_ctrl_cb,gr_ctrl_panic)
+    call fo_set_object_color(obj, FL_DARKORANGE, FL_GREEN)
+!
+!    obj = fo_add_pixmap(FL_NORMAL_PIXMAP,50,50,80,80,"PURDUE");
+!    fo_set_pixmap_file(obj,"boiler.xpm");
+!
+
+   call fo_end_form()
+
+   end subroutine gr_create_ctrl
+
+!*******************************************************************************
+!  callbacks for histogram control window 
+!*******************************************************************************
+
+   subroutine gr_histo_cb(obj,data)
+
+   IMPLICIT NONE 
+
+   INTEGER(FO)   OBJ 
+   INTEGER(LONG) DATA 
+
+   integer i
+
+   gim_ctrl%display   = .false. 
+   gmo_CTRL%rate      = .false.
+
+   i = fo_get_button(loc(obj))
+   select case (loc(data))
+     case(gr_histo_rate) 
+        gmo_CTRL%rate      = i.ne.0
+     case(gr_histo_adc) 
+       gim_ctrl%display = .true. 
+     case default
+       return
+     end select 
+
+   end subroutine gr_histo_cb
+
+!*******************************************************************************
+!    Create histogram control window
+!*******************************************************************************
+  
+
+   subroutine gr_create_histo
+
+   integer(fo) obj
+   integer(fo) group 
+
+   gr_histo_form = fo_bgn_form(FL_UP_BOX,gr_histo_wp,gr_histo_hp)
+
+   group = fo_bgn_group()
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON, 25, 25,125,25,"event rate")
+      call fo_set_object_callback(obj,gr_histo_cb,gr_histo_rate)
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON, 25,80,125,25,"ADC spectra")
+      call fo_set_object_callback(obj,gr_histo_cb,gr_histo_adc)
+    call fo_end_group()
+
+  call fo_end_form()
+
+  end subroutine gr_create_histo
+
+!*******************************************************************************
+!  callbacks for display window 
+!*******************************************************************************
+
+   subroutine gr_disp_cb(obj,data)
+ 
+
+   IMPLICIT NONE 
+
+   INTEGER(FO)   OBJ 
+   INTEGER(LONG) DATA 
+   INTEGER     IERR 
+
+   character(len=132)  :: string = "DISPLAY COMMAND DUMMY"
+   integer   i
+   real      r   
+
+   select case (loc(data))
+    case(gr_disp_range)                             ! set display "z-range" 
+      r = fo_get_slider_value(loc(obj))
+      write(string,*) "Camera/Range ",r
+    case(gr_disp_time)                              ! set wait time [sec]
+      r = fo_get_slider_value(loc(obj))
+      write(string,*) "Analysis/Update ",r
+    case(gr_disp_adc)                               ! raw ADC values 
+      GMO_CTRL%SC_RATE = .FALSE. 
+      string = "display/adc"
+    case(gr_disp_signal)                            ! ADC - pedestal 
+      GMO_CTRL%SC_RATE = .FALSE. 
+      string = "display/signal"
+    case(gr_disp_pst)                               ! trigger 
+      GMO_CTRL%SC_RATE = .FALSE. 
+      string = "display/trigger"
+    case(gr_disp_nsb)                               ! night sky background [pe]
+      GMO_CTRL%SC_RATE = .FALSE. 
+      string = "Image/Select 1 pes_nsb"
+    case(gr_disp_sc_rate)                           ! singles rates requested?
+      GMO_CTRL%SC_RATE = .TRUE.                     !   enable singles rates
+      string = "display/scaler"                     !   disable event display 
+    case(gr_disp_ped_var)			    ! pedestal variances
+      GMO_CTRL%SC_RATE = .FALSE.
+      string = "Image/Select 1 ped_var"		   
+    case(gr_disp_freeze)			    ! Display update control.
+       call fo_hide_object(disp_freeze)
+       call fo_show_object(disp_continue)
+       gmo_ctrl%update=.false.
+       return
+    case(gr_disp_continue)			    ! Display update control.
+       call fo_hide_object(disp_continue)
+       call fo_show_object(disp_freeze)
+       gmo_ctrl%update=.true.
+       return
+    case default
+      return
+  end select 
+
+  call fo_addto_browser(gr_input_out,string)
+
+  call gr_exec(string,ierr) 
+
+!  CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)                 ! request access 
+!  call kuexec(string)                                   ! 
+!  CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)               ! give up access 
+
+  end subroutine gr_disp_cb
+
+!*******************************************************************************
+!   Create display (control) window
+!*******************************************************************************
+  
+  subroutine gr_create_disp
+
+   
+
+  INTEGER(FO) obj
+  INTEGER(FO) group 
+
+  gr_disp_form = fo_bgn_form(FL_UP_BOX,gr_disp_wp,gr_disp_hp)
+
+  obj = fo_add_valslider(FL_VERT_FILL_SLIDER,425,25,50,80,"Range")
+  call fo_set_object_callback(obj,gr_disp_cb,gr_disp_range)
+  call fo_set_slider_return(obj,FL_RETURN_END_CHANGED)
+  call fo_set_slider_bounds(obj,0d0,1023d0)
+  call fo_set_slider_step(obj,5d0)
+  call fo_set_slider_precision(obj,1)
+
+  obj = fo_add_valslider(FL_VERT_FILL_SLIDER,350,25,50,80,"Update")
+  call  fo_set_object_callback(obj,gr_disp_cb,gr_disp_time)
+  call fo_set_slider_return(obj,FL_RETURN_END_CHANGED)
+  call fo_set_slider_bounds(obj,3d0,10d0)
+  call fo_set_slider_step(obj,1d0)
+  call fo_set_slider_precision(obj,1)
+
+  group =  fo_bgn_group()
+!    obj = fo_add_round3dbutton(FL_RADIO_BUTTON, 25, 25,25,25,"Raw    [DC]")
+    obj = fo_add_round3dbutton(FL_RADIO_BUTTON, 10, 25,25,25,"Raw    [DC]")
+    call fo_set_object_callback(obj,gr_disp_cb,gr_disp_adc)
+!    obj = fo_add_round3dbutton(FL_RADIO_BUTTON, 25, 50,25,25,"Signal [DC]")
+    obj = fo_add_round3dbutton(FL_RADIO_BUTTON, 10, 50,25,25,"Signal [DC]")
+    call fo_set_object_callback(obj,gr_disp_cb,gr_disp_signal)
+!    obj = fo_add_round3dbutton(FL_RADIO_BUTTON, 25, 75,25,25,"Trigger map")
+    obj = fo_add_round3dbutton(FL_RADIO_BUTTON, 10, 75,25,25,"Trigger map")
+    call fo_set_object_callback(obj,gr_disp_cb,gr_disp_pst)
+!    obj = fo_add_round3dbutton(FL_RADIO_BUTTON,175, 25,25,25,"NSB    [pes]")
+    obj = fo_add_round3dbutton(FL_RADIO_BUTTON,120, 25,25,25,"NSB    [pes]")
+    call fo_set_object_callback(obj,gr_disp_cb,gr_disp_nsb)
+!    obj = fo_add_round3dbutton(FL_RADIO_BUTTON,175, 50,25,25,"S-Rates [Hz]")
+    obj = fo_add_round3dbutton(FL_RADIO_BUTTON,120, 50,25,25,"S-Rates [Hz]")
+    call fo_set_object_callback(obj,gr_disp_cb,gr_disp_sc_rate)
+!    obj = fo_add_round3dbutton(FL_RADIO_BUTTON,175, 75,25,25,"Ped STD [DC]")
+    obj = fo_add_round3dbutton(FL_RADIO_BUTTON,120, 75,25,25,"Ped STD [DC]")
+    call fo_set_object_callback(obj,gr_disp_cb,gr_disp_ped_var)
+
+! Freeze display Update button:
+    disp_freeze = fo_add_button(FL_NORMAL_BUTTON,270,40,55,40,"FREEZE")
+    call fo_set_object_callback(disp_freeze,gr_disp_cb,gr_disp_freeze)
+    call fo_set_object_lstyle(disp_freeze, FL_BOLD_STYLE)
+    call fo_set_object_lsize(disp_freeze, FL_TINY_SIZE)
+    call fo_set_object_color(disp_freeze, FL_RED, FL_RED)
+    
+! Continue display Update button:
+    disp_continue = fo_add_button(FL_NORMAL_BUTTON,270,40,55,40,"Continue")
+    call fo_set_object_callback(disp_continue,gr_disp_cb,gr_disp_continue)
+    call fo_set_object_lstyle(disp_continue, FL_BOLD_STYLE)
+    call fo_set_object_lsize(disp_continue, FL_TINY_SIZE)
+    call fo_set_object_color(disp_continue, FL_GREEN, FL_GREEN)
+    call fo_hide_object(disp_continue)
+
+    obj = fo_add_text(FL_NORMAL_TEXT,255,80,80,30,"Display Update")
+    call fo_set_object_lsize(obj, FL_TINY_SIZE)
+
+  call fo_end_group()
+
+
+  call fo_end_form()
+
+  end subroutine gr_create_disp
+
+!*******************************************************************************
+!  callbacks for master window 
+!*******************************************************************************
+
+   subroutine gr_master_cb(obj, data)
+
+
+   INTEGER(FO)   OBJ 
+   INTEGER(LONG) DATA 
+
+   character(len=132) string
+   integer i
+
+   select case(loc(data))
+     case(gr_master_print) 
+       if (fo_show_question("Print display?",0)) then 
+        string = "ANALYSIS/PRINT"
+      else
+        return
+      endif 
+     case(gr_master_exit) 
+       if (fo_show_question("Do you really want to Exit?",0)) then 
+         string = "EXIT"
+      else
+        return
+      endif 
+    case(gr_master_histo) 
+      call fo_hide_form(gr_disp_form)
+      call fo_show_form(gr_histo_form,&
+        FL_PLACE_GEOMETRY,FL_FULLBORDER,& 
+        "Histogram Display Control")
+      string = "DISPLAY/DISABLE ; MONITOR/ENABLE"
+    case(gr_master_event) 
+      call fo_hide_form(gr_histo_form)
+      call fo_show_form(gr_disp_form,& 
+        FL_PLACE_GEOMETRY,FL_FULLBORDER,& 
+        "Event Display Control")
+      string = "MONITOR/DISABLE ; DISPLAY/ENABLE"
+!    case(gr_master_run) 
+!      call fo_hide_form(gr_input_form)
+!      call gxf_run_update                                     
+!      call fo_show_form(gr_run_form,FL_PLACE_GEOMETRY,&
+!		 FL_FULLBORDER,"Run Information")
+!      gr_run_refresh = .true. 
+!      return
+!    case(gr_master_cmd)
+!      call fo_hide_form(gr_run_form) 
+!      call fo_show_form(gr_input_form,FL_PLACE_GEOMETRY, &
+!		   FL_FULLBORDER,"Command")
+!      return
+    case default
+      return
+    end select 
+  
+    call fo_addto_browser(gr_input_out,string)
+
+     call gr_exec(string,ierr) 
+
+!    CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)                 ! request access 
+!    call kuexec(string)                                   ! exec command 
+!    CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)               ! give up access 
+
+    end subroutine gr_master_cb
+
+!*******************************************************************************
+!   Create master control window
+!*******************************************************************************
+
+    subroutine gr_create_master
+
+    integer(fo) obj
+    integer(fo) group 
+
+    gr_master_form = fo_bgn_form(FL_UP_BOX,gr_master_wp,gr_master_hp)
+!    group =  fo_bgn_group()
+!      obj = fo_add_lightbutton(FL_RADIO_BUTTON,175, 25,85,40,"Command")
+!      call fo_set_object_callback(obj,gr_master_cb,gr_master_cmd)
+!      obj = fo_add_lightbutton(FL_RADIO_BUTTON,175,100,100,50,"RunInfo")
+!      call fo_set_object_callback(obj,gr_master_cb,gr_master_run)
+!     obj = fo_add_lightbutton(FL_RADIO_BUTTON,175,25,100,50,"Status")
+!     call fo_set_object_callback(obj,gr_master_cb,gr_master_status)
+!    call fo_end_group()
+
+    obj = fo_add_button(FL_NORMAL_BUTTON,50,20,85,40,"PRINT")
+    call fo_set_object_callback(obj,gr_master_cb,gr_master_print)
+    call fo_set_object_color(obj,  FL_GREEN, FL_DARKORANGE)
+
+
+    group = fo_bgn_group()
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON,150, 20,85,40,"Events")
+      call fo_set_object_callback(obj,gr_master_cb,gr_master_event)
+      obj = fo_add_lightbutton(FL_RADIO_BUTTON,250, 20,85,40,"Histo")
+      call fo_set_object_callback(obj,gr_master_cb,gr_master_histo)
+    call fo_end_group()
+
+    obj = fo_add_button(FL_NORMAL_BUTTON,350,20,85,40,"EXIT")
+    call fo_set_object_callback(obj,gr_master_cb,gr_master_exit)
+    call fo_set_object_color(obj, FL_DARKORANGE, FL_GREEN)
+  call fo_end_form()
+
+  end subroutine gr_create_master
+
+!*******************************************************************************
+!  idle callback
+!*******************************************************************************
+
+  integer function gr_idle_cb(ev,data) 
+
+  implicit none 
+
+  integer(fo)   ev
+  integer(long) data 
+
+  real time 
+  integer i,j,ierr  
+
+  character(len=132) :: string 
+
+  call gos_output(string,j,ierr)                            
+  if (j.gt.0) then 
+    call fo_addto_browser(gr_input_out,trim(string))
+  else                                                     ! nothing to do 
+    CALL GOS_WAIT(0.25)                                    ! so wait a bit .. 
+  endif 
+
+  time = secnds(time) 
+  if (time > 2.0) then                       ! time for an update?          
+    call gxf_run_update                      !  update run info            
+  endif 
+
+  gr_idle_cb = 0 
+
+  return
+
+  end function gr_idle_cb
+
+  end module gxf 
+   
+!*******************************************************************************
+!  utils    
+!*******************************************************************************
+
+
+  subroutine gr_exec(string,ierr) 
+
+    use gos 
+
+    implicit none 
+
+    CHARACTER(LEN=*)                :: STRING 
+    INTEGER,INTENT(OUT)             :: IERR 
+    real time 
+
+    IERR = 1 
+    TIME = SECNDS(0.0) 
+    DO WHILE (SECNDS(TIME).LT.5.0) 
+      CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)                 ! request access 
+      IF (IERR.EQ.0) EXIT      
+      CALL GOS_WAIT(0.5)      
+    ENDDO 
+
+    IF (IERR.NE.0) THEN 
+      IERR = GOS_ERROR("GR_EXEC","Failed to access CERNLIBs",IERR) 
+      PRINT*,"GR_EXEC","Failed to access CERNLIBs",IERR 
+      RETURN 
+    ENDIF 
+
+    CALL KUEXEC(TRIM(STRING))                             ! exec command 
+
+    IERR = 2 
+    TIME = SECNDS(0.0) 
+    DO WHILE (SECNDS(TIME).LT.5.0) 
+      CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)      
+      IF (IERR.EQ.0) EXIT      
+      CALL GOS_WAIT(0.5)      
+    ENDDO 
+  
+    IF (IERR.NE.0) THEN 
+      IERR = GOS_ERROR("GR_EXEC","Failed to release CERNLIBs",IERR) 
+      PRINT*,"GR_EXEC","Failed to release CERNLIBs",IERR 
+      RETURN 
+    ENDIF 
+
+  end subroutine gr_exec  
+
+
+!*******************************************************************************
+   program xyz  
+!*******************************************************************************
+
+   USE GXF 
+   USE GOS 
+
+   implicit none 
+
+   integer xp, yp 
+   integer     ierr 
+   integer(fo) form 
+   
+   CALL GOS_CREATE_MUTEX(IERR)
+
+   call fo_init
+
+   call gr_create_input
+   call gr_create_ctrl
+   call gr_create_master
+   call gr_create_disp
+   call gr_create_histo
+   call gr_create_run
+   call gr_create_runno
+   call gr_create_comm
+
+   xp = gr_higz_wp + 4 * gr_border_rp
+   yp = 0
+   call fo_set_form_position(gr_master_form,xp,yp)
+
+   xp = gr_higz_wp + 4 * gr_border_rp
+   yp = gr_master_hp + 2 * gr_border_tp + gr_border_bp
+   call fo_set_form_position(gr_histo_form,xp,yp)
+
+   xp = gr_higz_wp + 4 * gr_border_rp
+   yp = gr_master_hp + 2 * gr_border_tp + gr_border_bp
+   call fo_set_form_position(gr_disp_form,xp,yp)
+
+   xp = gr_higz_wp + 4 * gr_border_rp 
+   yp = gr_master_hp + gr_disp_hp + 3 * gr_border_tp + 2 * gr_border_bp
+   call fo_set_form_position(gr_run_form, xp,yp)
+   gr_run_refresh = .true. 
+
+   xp = gr_higz_wp + 4 * gr_border_rp 
+   yp = gr_master_hp + gr_disp_hp + gr_run_hp + 4 * gr_border_tp + 3 * gr_border_bp 
+   call fo_set_form_position(gr_comm_form,xp,yp)
+
+   xp = gr_higz_wp + 4 * gr_border_rp 
+   yp = gr_master_hp + gr_disp_hp + gr_run_hp + 4 * gr_border_tp + 3 * gr_border_bp 
+   call fo_set_form_position(gr_input_form,xp,yp)
+
+   xp = gr_higz_wp + 4 * gr_border_rp
+   yp = gr_master_hp + gr_disp_hp + gr_run_hp +  gr_input_hp  + 5 * gr_border_tp + 4 * gr_border_bp 
+   call fo_set_form_position(gr_ctrl_form,xp,yp)
+
+   xp = gr_higz_wp + 4 * gr_border_rp 
+   yp = gr_master_hp + 2 * gr_border_tp + gr_border_bp
+   call fo_set_form_position(gr_runno_form,xp,yp)
+
+   call fo_show_form(gr_input_form ,FL_PLACE_GEOMETRY,FL_FULLBORDER,"Command")
+   call fo_show_form(gr_ctrl_form,FL_PLACE_GEOMETRY,FL_FULLBORDER,"Run Control")
+   call fo_show_form(gr_master_form,FL_PLACE_GEOMETRY,FL_FULLBORDER,"Windows")
+   call fo_show_form(gr_disp_form,FL_PLACE_GEOMETRY,FL_FULLBORDER,"Event Display Control")
+   call fo_show_form(gr_run_form,FL_PLACE_GEOMETRY,FL_FULLBORDER,"Run Information")
+
+   call fo_set_idle_callback(gr_idle_cb, 0)
+
+   call granite(gr_higz_wp,gr_higz_hp)
+   do 
+     form = fo_do_forms()
+   enddo 
+   end program 

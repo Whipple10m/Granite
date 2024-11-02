@@ -1,0 +1,738 @@
+
+
+      MODULE GTR 
+
+      USE GCA                   ! camera display 
+      USE GHI                   ! Higz 
+      USE GDF 
+      USE GOS                   ! OS interface 
+
+      IMPLICIT NONE 
+
+!-------------------------------------------------------------------------------
+!     pattern trigger software 
+!-------------------------------------------------------------------------------
+!
+!     * Any trigger code that is specific to the data acquisition is not 
+!       included here.
+!
+!     * FORTRAN IO unit number are "hard-wired". Possible conflict with other 
+!       parts of code bits  
+!
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+!Modified:
+!
+!	18/11/98 GHS
+!		Set up so we can turn off the PST display. Change FIRED command
+!		to: pst/display on or pst/display off
+!
+!	23/12/98 AMB
+!		Set up so we can alter the amount we read out.
+!		trigger/read normal is default.
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      PRIVATE 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+
+      PUBLIC GTR_ACTION          ! KUIP interface 
+      PUBLIC GTR_MEMORY          ! generate 5 bit memory patterns 
+      PUBLIC GTR_PLOT_PST
+      PUBLIC GTR_MONITOR 
+      PUBLIC GTR_SHOW_MAP 
+
+      LOGICAL, PUBLIC :: PST_DISPLAY = .TRUE.
+      LOGICAL, PUBLIC :: PST_READ_NORMAL = .TRUE.
+      LOGICAL, PUBLIC :: PST_READ_NONE   = .FALSE.
+
+!-------------------------------------------------------------------------------
+!     storage for decoding result of each trigger bit set 
+!-------------------------------------------------------------------------------
+      TYPE, PUBLIC :: GTR_HIT_T  
+        INTEGER UPOS                    ! pixel u-positin 
+        INTEGER VPOS                    ! pixel v-position 
+        INTEGER MODULE                  ! module number 
+        INTEGER PATCH                   ! patch number 
+        INTEGER PIXEL                   ! pixel number 
+      END TYPE 
+
+      TYPE,PUBLIC  :: GTR_STA_T  
+        INTEGER :: EVENTS                  ! number of events with trigger info 
+        INTEGER :: COLOR(331)              ! assign color depending on status 
+        INTEGER :: FIRED(331)              ! PST inputs in current event 
+        INTEGER :: TOTAL(331)              ! total number of PST inputs  
+        INTEGER :: PIXEL(331)              ! number of events  
+        INTEGER :: PATCH(5,13)             !      per patch 
+        REAL    :: PERCENT(331)            ! 100* (contributed/events)   
+      END TYPE 
+
+      TYPE(GTR_STA_T),TARGET,PUBLIC :: GTR_STA
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      CONTAINS 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GTR_ACTION
+!-------------------------------------------------------------------------------
+!     KUIP interface action routine 
+!-------------------------------------------------------------------------------
+!Modified:
+!
+!	18/11/98 GHS
+!		Set up so we can turn off the PST display. Change FIRED command
+!		to: pst/display on or pst/display off
+!-------------------------------------------------------------------------------
+      
+      IMPLICIT NONE 
+
+      CHARACTER(LEN= 64) CMD                         ! command name 
+      CHARACTER(LEN=128) FILE                        ! KUGETF file name 
+      CHARACTER(LEN=132) MSG                         ! error message 
+      CHARACTER(LEN=*),PARAMETER::SRN = "GTR_ACTION" ! subroutine name  
+      INTEGER            NCHA                        ! # of characters 
+      INTEGER            NPAR                        ! # of command parameters 
+      INTEGER            IERR                        ! return code 
+      INTEGER            I                           
+        CHARACTER( 3) :: STATE      	! new module state ON/OFF
+        INTEGER :: CLEN     			  ! character string length  
+    
+      IERR = 0
+
+      CALL KUPATL(CMD,NPAR)                          ! get command name 
+      CALL CLTOU(CMD)                                ! convert to upper case
+      IF (CMD.EQ."FILE") THEN                     ! generate pattern file?
+        CALL KUGETI(I)                               ! get multiplicity 
+        CALL KUGETF(FILE,NCHA)                       ! get file name 
+        CALL GTR_MEMORY(I,FILE,IERR)                 ! generate file
+      ELSE 
+        IF (CMD.EQ."DISPLAY") THEN
+	       CALL KUGETC(STATE,CLEN)               ! get ON/OFF string 
+	       IF (STATE=="ON") THEN 
+                   PST_DISPLAY = .TRUE.          
+	           MSG = "Display of PST enabled"
+	           IERR = GOS_ERROR(SRN,TRIM(MSG),1)            ! send message 
+	       elseIF (STATE=="OFF") THEN 
+                   PST_DISPLAY = .FALSE.          
+	           MSG = "Display of PST is disabled"
+	           IERR = GOS_ERROR(SRN,TRIM(MSG),1)            ! send message 
+	        ELSE 
+	            MSG  = "Sorry. Is it on or Off?"
+	            IERR = GOS_ERROR(SRN,MSG,2) 
+	        ENDIF 
+         ELSEIF (CMD.EQ."READ_NORMAL") THEN
+ 	       CALL KUGETC(STATE,CLEN)               ! get command string 
+ 	       IF (STATE=="ON") THEN 
+                   PST_READ_NORMAL = .TRUE.                                    
+                   PST_READ_NONE   = .FALSE.          
+	           MSG = "Normal reading of PST enabled"
+	           IERR = GOS_ERROR(SRN,TRIM(MSG),1)  
+	       ELSE 
+	           MSG  = "Activate a different readout method"
+	           IERR = GOS_ERROR(SRN,MSG,2) 
+	       ENDIF 
+         ELSEIF (CMD.EQ."READ_NONE") THEN
+	       CALL KUGETC(STATE,CLEN)               ! get command string 
+	       IF (STATE=="ON") THEN 
+                   PST_READ_NONE     = .TRUE.                                  
+                   PST_READ_NORMAL   = .FALSE.          
+	           MSG = "Non-reading of PST enabled"
+	           IERR = GOS_ERROR(SRN,TRIM(MSG),1)  
+	       ELSE 
+	           MSG  = "Activate a different readout method"
+	           IERR = GOS_ERROR(SRN,MSG,2) 
+	       ENDIF 
+         ELSE                                           ! unknown command 
+           MSG = "Unknown command: "//CMD               ! error message
+           IERR = GOS_ERROR(SRN,TRIM(MSG),1)            ! send message 
+         ENDIF 
+      ENDIF
+
+      END SUBROUTINE GTR_ACTION
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GTR_MEMORY(NADJ,FILE,IERR)  
+!-------------------------------------------------------------------------------
+!     generate trigger pattern memory file 
+!-------------------------------------------------------------------------------
+      
+      INTEGER             NADJ  ! minimum number of adjacent pixels
+      CHARACTER(LEN=*) :: FILE  ! output file name       
+      INTEGER             IERR 
+      CHARACTER(LEN=132) :: MSG 
+      CHARACTER(LEN=*),PARAMETER :: SRN = "GTR_MEMORY" 
+
+
+!---- misc 
+      INTEGER I,J,K,N,M  
+      INTEGER I19                                        ! 19-bit pattern 
+
+!---- pixel positions 
+      INTEGER :: U(19), V(19)      
+      DATA U / -0,-1,-2,-2,-2,+1,-0,-1,-1,-1,+2,+1,-0,-0,-0,+2,+1,+1,+2 /
+      DATA V / -2,-1,-0,+1,+2,-2,-1,-0,+1,+2,-2,-1,-0,+1,+2,-1,-0,+1,-0 /
+
+!----
+      INTEGER,ALLOCATABLE :: P2(:)       ! pattern of 2 ajacent pixels 
+      INTEGER,ALLOCATABLE :: P3(:)       ! pattern of 3 ajacent pixels 
+      INTEGER,ALLOCATABLE :: P4(:)       ! pattern of 4 ajacent pixels 
+      INTEGER,ALLOCATABLE :: PX(:)       ! pattern temporary storage 
+!-------------------------------------------------------------------------------
+!     check (u,v) pixel coordinates are correct  
+!-------------------------------------------------------------------------------
+!---- check pixel coordinates are unique 
+      DO I=1,19                                  ! loop over all (i,j) pairs
+        DO J=I+1,19                              !   of two pixels 
+          IF (U(I).EQ.U(J)) THEN 
+          IF (V(I).EQ.V(J)) THEN 
+            MSG  = "Found two identical pixels" 
+            IERR = GOS_ERROR(SRN,TRIM(MSG),1) 
+            RETURN 
+          ENDIF 
+          ENDIF 
+        ENDDO 
+      ENDDO                              
+!---- check distance from center 
+      DO I=1,19                                    ! loop over all pixels
+        IF (ABS(U(I)).GT.2) IERR = 10              ! 
+        IF (ABS(V(I)).GT.2) IERR = 11              ! 
+        IF (ABS(V(I)+U(I)).GT.2) IERR = 12         ! max distance from center 
+        IF (IERR.GT.0) THEN 
+          MSG  = "Found illegal pixel coordinates" ! error message 
+          IERR = GOS_ERROR(SRN,TRIM(MSG),IERR)             
+          RETURN 
+        ENDIF 
+      ENDDO                              
+!-------------------------------------------------------------------------------
+!     find all patterns with two adjacent pixels out of 19 
+!-------------------------------------------------------------------------------
+      ALLOCATE(PX(9999))                         ! create temp storage 
+      PX = 0                                     ! clear all data words 
+      N  = 0                                     ! reset 2-adjacent count 
+      DO I=1,19                                  ! loop over all (i,j) pairs
+        DO J=I+1,19                              !   of two pixels 
+          IF (ABS(U(I)-U(J)).GT.1) CYCLE         ! check difference in (u,v)
+          IF (ABS(V(I)-V(J)).GT.1) CYCLE         ! to eliminate non-neighbours 
+          IF (ABS((U(I)-U(J))-(V(I)-V(J))).LT.1) CYCLE  ! SMB 13.9.98 
+          N = N + 1                              ! increment count 
+          PX(N) = IBSET(PX(N),I-1)               ! switch on bit I
+          PX(N) = IBSET(PX(N),J-1)               ! switch on bit J 
+!!GHS Debug print
+!	write(6,4300)N,i,j,px(n)
+!4300	format(' N,I,J,PX(octal):',3i5,o10)
+        ENDDO 
+      ENDDO                              
+      ALLOCATE(P2(N))                            ! create storage 
+      P2 = PX(1:N)                               ! copy 2-fold patterns 
+      PX(1:N) = 0                                ! clear temp storage 
+      PRINT*,"Number of 2-folds",N 
+!-------------------------------------------------------------------------------
+!     find all patterns with three adjacent pixels 
+!-------------------------------------------------------------------------------
+      N  = 0                                     ! reset pattern count 
+      DO I=1,SIZE(P2)                            ! loop over all pairs 
+        DO J=I+1,SIZE(P2)                        !   of 2-folds 
+          I19 = IOR(P2(I),P2(J))                 ! take overlap 
+          M   = 0                                ! reset bit count 
+          DO K=0,18                              ! for lower 19 bits 
+            IF (BTEST(I19,K)) M = M + 1          ! count bits sets 
+          ENDDO                                  ! 
+          IF (M.EQ.3) THEN                       ! new pattern with 3-bits?
+           IF (.NOT.ANY(PX(1:N).EQ.I19)) THEN    ! SMB 13.9.98 not identical one?
+            N = N + 1                            ! count patterns 
+            PX(N) = I19                          ! store pattern 
+           ENDIF
+          ENDIF 
+        ENDDO 
+      ENDDO 
+      ALLOCATE(P3(N))                            ! create storage 
+      P3 = PX(1:N)                               ! copy 3-fold patterns 
+      PX(1:N) = 0                                ! clear temp storage 
+      PRINT*,"Number of 3-folds",N 
+!-------------------------------------------------------------------------------
+!     find all patterns with four adjacent pixels 
+!-------------------------------------------------------------------------------
+      N  = 0                                     ! reset pattern count 
+      DO I=1,SIZE(P2)                            ! loop over all 2-folds 
+        DO J=1,SIZE(P3)                          ! loop over all 3-folds 
+          I19 = IOR(P2(I),P3(J))                 ! take overlap 
+          M   = 0                                ! reset bit count 
+          DO K=0,18                              ! for lower 19 bits 
+            IF (BTEST(I19,K)) M = M + 1          ! count bits sets 
+          ENDDO                                  ! 
+          IF (M.EQ.4) THEN                       ! new pattern with 4-bits?
+            IF (.NOT.ANY(PX(1:N).EQ.I19)) THEN   ! no identical ones yet?
+              N = N + 1                          ! count new patterns 
+              PX(N) = I19                        ! store new pattern 
+            ENDIF 
+          ENDIF 
+        ENDDO 
+      ENDDO 
+      ALLOCATE(P4(N))                            ! create storage 
+      P4 = PX(1:N)                               ! copy 4-fold patterns 
+      PX(1:N) = 0                                ! clear temp storage 
+      PRINT*,"Number of 4-folds",N 
+!-------------------------------------------------------------------------------
+!     write trigger data files  
+!-------------------------------------------------------------------------------
+      IF (NADJ.EQ.2) THEN  
+        CALL GTR_WRITE(FILE,P2,IERR)
+      ELSE IF (NADJ.EQ.3) THEN  
+        CALL GTR_WRITE(FILE,P3,IERR)
+      ELSE IF (NADJ.EQ.4) THEN  
+        CALL GTR_WRITE(FILE,P4,IERR)
+      ELSE
+        MSG = "Cannot handle this multiplicity."
+        IERR = GOS_ERROR(SRN,TRIM(MSG),20) 
+      ENDIF 
+!-------------------------------------------------------------------------------
+!     deallocate memory 
+!-------------------------------------------------------------------------------
+      DEALLOCATE(P2,P3,P4,PX) 
+
+      END SUBROUTINE GTR_MEMORY 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GTR_WRITE(FILE,PN,IERR)  
+!-------------------------------------------------------------------------------
+!     write trigger patterns to file 
+!-------------------------------------------------------------------------------
+      IMPLICIT NONE 
+
+      CHARACTER(LEN=*) :: FILE 
+      INTEGER          :: PN(:)
+      INTEGER          :: IERR 
+
+!----
+      LOGICAL*2,ALLOCATABLE :: I16(:)              ! 16-bit integer 
+      INTEGER, PARAMETER    :: N19 = 2**19         ! number of data words
+      INTEGER I,J 
+!----
+      ALLOCATE(I16(0:N19-1)) 
+      I16 = '0000'X
+      DO I=0,N19-1 
+        DO J=1,SIZE(PN) 
+          IF (PN(J).EQ.IAND(I,PN(J))) THEN 
+            I16(I) = '001F'X
+            EXIT 
+          ENDIF 
+        ENDDO 
+      ENDDO 
+!----
+      OPEN(&
+        UNIT=60,&
+        FILE=FILE,&
+        FORM="UNFORMATTED")
+      WRITE(60) I16 
+      CLOSE(60)      
+      DEALLOCATE(I16) 
+
+      END SUBROUTINE GTR_WRITE  
+
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GTR_PLOT_PST   
+
+!-------------------------------------------------------------------------------
+!     re-plot pixel outlines to indicate which fired pattern selection trigger  
+!-------------------------------------------------------------------------------
+
+      IMPLICIT NONE 
+
+      TYPE(GTR_HIT_T), POINTER :: HIT(:)      ! decoding result 
+      
+      INTEGER :: IC
+      INTEGER :: NW                           ! number of data words  
+      INTEGER :: I,I1,I2
+      INTEGER :: J,J1,J2 
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      IF (.NOT.PST_DISPLAY) RETURN            ! keep quiet?
+      IF (SUM(GTR_STA%TOTAL).LE.0) RETURN     ! not signals yet 
+
+!---- display pixels fired 
+      NW = GDF_EV10%NTRG                       ! number of data words 
+      IF (NW.GT.0) THEN                        ! any data 
+        IC = GCA_CAMERA_10M                        ! set camera to 10m 
+        I1 = LBOUND(GTR_STA%FIRED,1) 
+        I2 = UBOUND(GTR_STA%FIRED,1) 
+        CALL GCA_PLOT_PMT(IC,I1,I2,&
+         (GTR_STA%FIRED.GT.0),&           !   
+          "HS")                           ! H=hexagon shape, S=Superimose 
+      ENDIF 
+
+      RETURN 
+      END SUBROUTINE GTR_PLOT_PST   
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GTR_PLOT_LIST    
+
+!-------------------------------------------------------------------------------
+!     re-plot pixel outlines to indicate which fired pattern selection trigger  
+!-------------------------------------------------------------------------------
+
+
+      IMPLICIT NONE 
+
+      TYPE(GTR_HIT_T), POINTER :: HIT(:)      ! decoding result 
+      
+      INTEGER :: NW                           ! number of data words  
+      INTEGER :: IC
+      INTEGER :: I,I1,I2
+      INTEGER :: J,J1,J2 
+
+!---- hit statistics display 
+      INTEGER, PARAMETER   :: NL = 10             ! length of list(s)          
+      LOGICAL, ALLOCATABLE :: MASK(:) 
+      INTEGER              :: POS(2,NL)           ! top number of hit pixels
+      REAL                 :: PEV(2,NL)           ! percentage of events
+      REAL                 :: PSI(2,NL)           ! percentage of signals
+      CHARACTER(LEN=32)    :: TEXT(3)             ! text to display
+      REAL                 :: X(3),Y(2)           ! screen position 
+      REAL                 :: SIZE                ! text height 
+      REAL                 :: STEP                ! line spacing   
+      INTEGER              :: COLOR(2)            ! text colors 
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      IF (.NOT.PST_DISPLAY) RETURN            ! keep quiet?
+      IF (SUM(GTR_STA%TOTAL).LE.0) RETURN     ! not signals yet 
+
+!-------------------------------------------------------------------------------
+!     display top/bottom hit statistics 
+!-------------------------------------------------------------------------------
+      COLOR(1) = GHI_RED              ! hot pixels are red 
+      COLOR(2) = GHI_BLUE             ! dead pixel are blue 
+      GTR_STA%COLOR = GHI_GREEN       ! default color, green  
+
+
+!---- find highest/ lowest number of hits 
+      PEV = 0                         ! clear old list  
+      PSI = 0                         ! clear old list 
+
+      J1 = LBOUND(GTR_STA%PERCENT,1)  ! required length of search mask 
+      J2 = UBOUND(GTR_STA%PERCENT,1)  
+      ALLOCATE(MASK(J1:J2))           ! create a mask  
+      MASK = .TRUE.                   ! default: search all 
+
+      I1 = LBOUND(POS,2)                    ! establish length of list 
+      I2 = UBOUND(POS,2)
+      DO I=I1,I2
+        POS(1,I) = MAXLOC(GTR_STA%PERCENT,1,MASK) ! highest percentage?  
+        POS(2,I) = MINLOC(GTR_STA%PERCENT,1,MASK) ! lowest percentage  
+        MASK(POS(1,I)) = .FALSE.                    ! ignore from now on 
+        MASK(POS(2,I)) = .FALSE.                    ! .... 
+        GTR_STA%COLOR(POS(1:2,I)) = COLOR(1:2)           ! hot pixels are red 
+      END DO 
+      DEALLOCATE(MASK) 
+
+      PEV(1,:) = GTR_STA%PERCENT(POS(1,:)) 
+      PEV(2,:) = GTR_STA%PERCENT(POS(2,:)) 
+      PSI(1,:) = 1E2 * GTR_STA%TOTAL(POS(1,:)) / SUM(GTR_STA%TOTAL)         
+      PSI(2,:) = 1E2 * GTR_STA%TOTAL(POS(2,:)) / SUM(GTR_STA%TOTAL)  
+ 
+!---- display lists on screen 
+      CALL IGSET("TXFP",20.)                       ! font * 10 + precison 
+      CALL ISTXFP(-10,0) 
+      IC   = GCA_CAMERA_10M                        ! set camera to 10m 
+      STEP = GCA_CAMERA(IC)%VSPACE
+      SIZE = GCA_CAMERA(IC)%HEIGHT 
+      X(1) = - GCA_CAMERA(IC)%WDEG +  3 * STEP ! left 
+!--      X(2) = - GCA_CAMERA(IC)%WDEG +  6 * STEP ! left
+      X(2) = - GCA_CAMERA(IC)%WDEG +  7 * STEP ! left
+!--      X(3) = - GCA_CAMERA(IC)%WDEG +  9 * STEP ! left
+      X(3) = - GCA_CAMERA(IC)%WDEG +  10 * STEP ! left
+      Y(1) = + GCA_CAMERA(IC)%WDEG -  2 * STEP ! top 
+      Y(2) = - GCA_CAMERA(IC)%WDEG + (3+I2-I1) * STEP ! top 
+
+      CALL IGSET("TXCI",FLOAT(GHI_FRONT))               ! text in default color
+      DO J=1,2
+        CALL IGSET("TXFP", 10.*I+J)                     ! font * 10 + precison 
+        CALL IGTEXT(X(1),Y(J),"pixel",SIZE,0.0,"R")
+        CALL IGTEXT(X(2),Y(J),"pev"  ,SIZE,0.0,"R")      
+        CALL IGTEXT(X(3),Y(J),"psi"  ,SIZE,0.0,"R")
+        Y(J) = Y(J) - 2. * STEP  
+        CALL IGSET("TXCI",FLOAT(COLOR(J)))
+        DO I=I1,I2    
+          WRITE(TEXT(1),'(I4  )') POS(J,I)
+          WRITE(TEXT(2),'(F5.2)') PEV(J,I) 
+!----   F5.1 
+          WRITE(TEXT(3),'(F5.2)') PSI(J,I) 
+          CALL IGTEXT(X(1),Y(J),TEXT(1),SIZE,0.0,'R')    
+          CALL IGTEXT(X(2),Y(J),TEXT(2),SIZE,0.0,"R")      
+          CALL IGTEXT(X(3),Y(J),TEXT(3),SIZE,0.0,"R") 
+          Y(J) = Y(J) - STEP   
+        ENDDO 
+        CALL IGSET("TXCI",FLOAT(GHI_FRONT))             ! reset color
+      ENDDO  
+
+      Y(1) = + GCA_CAMERA(IC)%WDEG -  2 * STEP ! top 
+      Y(2) = + GCA_CAMERA(IC)%WDEG -  3 * STEP ! top 
+!     Y(1) = Y(2) + 2 * STEP 
+!     Y(2) = Y(2) + 1 * STEP 
+      X(1) = - GCA_CAMERA(IC)%WDEG + 11 * STEP
+      CALL IGTEXT(X(1),Y(1),"pev - percentage of PST events ",SIZE,0.0,'L')    
+      CALL IGTEXT(X(1),Y(2),"psi - percentage of pixel triggers",SIZE,0.0,'L')    
+            
+      RETURN
+      END SUBROUTINE  GTR_PLOT_LIST 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GTR_DECODE_PST(IDATA,PIXEL,HIT)
+!-------------------------------------------------------------------------------
+!     decode pattern trigger information 
+!-------------------------------------------------------------------------------
+!     Routine to take trigger words from 13 Hytec Pattern Selection
+!     Trigger (PST) modules oriented to cover a 331 pixel hexagon and 
+!     decipher which pixels caused a trigger. Each PST MODULE covers
+!     59 pixels arranged in FIVE overlapping PATCHES of 19 PIXELS.
+!-------------------------------------------------------------------------------
+
+      IMPLICIT NONE
+      
+!---- arguments 
+      LOGICAL, INTENT(IN)      :: IDATA(:)       ! data word array 
+      INTEGER, POINTER         :: PIXEL(:,:)     ! pixel(u,v) look up table
+      TYPE(GTR_HIT_T), POINTER :: HIT(:)         ! decoding result 
+
+!---- 
+      INTEGER  :: I,I1,I2                       ! loop counter abd limits 
+      INTEGER  :: J,J1,J2                       ! loop counter abd limits 
+      INTEGER  :: I32 
+
+!---- declarations specifically for decoding position ------
+
+      INTEGER N,M
+      INTEGER IMODULE, IPATCH   ! module, patch
+      INTEGER IPTCHU(19)        ! u-position within patch
+      INTEGER IPTCHV(19)        ! v-position within patch
+      INTEGER IMIDPTCHU(5)      ! u-position patch center
+      INTEGER IMIDPTCHV(5)      ! v-position patch center
+      INTEGER U,V
+      INTEGER X,Y
+      INTEGER NH
+      INTEGER A,B,C,D           ! rotation matrix coeff 
+      INTEGER NP                ! number of patch bits set 
+ 
+ 
+!---- description of modules 
+      TYPE :: MODULE_T  
+        INTEGER U,V                    ! position of center 
+        INTEGER A,B,C,D                ! rotation matrix coefficients 
+      END TYPE 
+      TYPE(MODULE_T) :: MODULE(13)  
+  
+
+!---- pixel position for each of 19 bits 
+      DATA IPTCHU / 0,-1,-2,-2,-2,+1,0,-1,-1,-1,+2,+1,0,0,0,+2,1,+1,+2/
+      DATA IPTCHV /-2,-1,0,+1,+2,-2,-1,0,+1,+2,-2,-1,0,+1,+2,-1,0,+1,0/
+
+!---- patch position within module for each of 5 patches  
+      DATA IMIDPTCHU / -4, -2, 0, +2, +4 /
+      DATA IMIDPTCHV /  0,  0, 0,  0,  0 /
+
+!---- position of module centre (channel 13 of patch 3) 
+      DATA MODULE%U     /+4,+4,+4,+4,+4,-2, 0,+2,+4,-2,-4,-6,-8/
+      DATA MODULE%V     / 0,-2, 0,+2,+4,-2,-4,-6,-8,+4,+4,+4,+4/
+!     module rotation        <+60 deg >, < 180 deg >,  <-60 deg>   
+      DATA MODULE%A    / 1, +1,+1,+1,+1, -1,-1,-1,-1,  0, 0, 0, 0 /  
+      DATA MODULE%B    / 0, +1,+1,+1,+1,  0, 0, 0, 0, -1,-1,-1,-1 /  
+      DATA MODULE%C    / 0, -1,-1,-1,-1,  0, 0, 0, 0, +1,+1,+1,+1 /  
+      DATA MODULE%D    / 1,  0, 0, 0, 0, -1,-1,-1,-1, +1,+1,+1,+1 /  
+
+!---- 
+      INTEGER                      :: IERR 
+      CHARACTER(LEN=132)           ::  MSG                      ! error message 
+      CHARACTER(LEN=  *),PARAMETER ::  SRN = "GTR_DECODE_PAST" 
+      LOGICAL                      :: TEST(5) 
+!------------------------------------------------------------------------------
+!     allocate memory  
+!------------------------------------------------------------------------------
+      NH = 0                                       ! reset bit set count 
+      I1 = LBOUND(IDATA,1)                         ! lower index data words 
+      I2 = UBOUND(IDATA,1)                         ! upper .... 
+      DO I=I1,I2                                   ! all data words 
+        DO J=1,19                                  ! all 19 channel bits
+          I32 = IDATA(I)                           ! copy to integer 
+          IF (BTEST(I32,J-1)) NH = NH + 1          ! count bits set = hits   
+        ENDDO                                      ! next bit 
+      ENDDO                                        ! next data word 
+      IF (ASSOCIATED(HIT)) DEALLOCATE(HIT)         ! remove previous result  
+      IF (NH.LE.0) RETURN                          ! any new hits or return?   
+      ALLOCATE(HIT(NH))                            ! alloc max memory needed
+!------------------------------------------------------------------------------
+!--- NOW DECODE THE DATA WORDS INTO (u,v) PIXEL POSITIONS -------
+!------------------------------------------------------------------------------
+      NH = 0                                       ! reset hit count 
+      DO I=I1,I2                                   ! all data words 
+
+        I32     = IDATA(I)                         ! copy to integer 
+        IMODULE = IAND(ISHFT(I32,-24),'7F'X)       ! decode module number
+        IPATCH  = IAND(ISHFT(I32,-19),'1F'X)       ! get patch number bits  
+        NP = 0                                     ! set bit count to zero
+        DO J=0,4                                   ! all bit positions 
+          IF (BTEST(IPATCH,J)) NP = NP+1           ! count bits 
+        ENDDO  
+        DO J=0,4                                   ! go through all five bits 
+          IF (BTEST(IPATCH,J)) THEN                ! test if bit is on? 
+            IPATCH = J+1                           ! if yes, set patch #  
+            EXIT                                   ! found bit, exit loop 
+          ENDIF                                    ! end test bit 
+        ENDDO                                      ! try next bit 
+
+        TEST(1) = IMODULE.LT.LBOUND(MODULE,1)      ! test module number 
+        TEST(2) = IMODULE.GT.UBOUND(MODULE,1) 
+        TEST(3) = IPATCH .LT.LBOUND(IPTCHU,1)      ! test patch number 
+        TEST(4) = IPATCH .GT.UBOUND(IPTCHU,1) 
+        TEST(5) = (NP.LT.1).OR.(NP.GT.5)           ! test single patch only 
+        
+        IF (ANY(TEST)) THEN 
+          WRITE(MSG,*) "Illegal patch or module number",IPATCH,IMODULE,NP  
+	  IERR = GOS_ERROR(SRN,TRIM(MSG),1)       ! send message 
+          DEALLOCATE(HIT) 
+          RETURN 
+        ENDIF 
+
+        DO J=1,19                                  ! all 19 channel bits
+          I32     = IDATA(I)                       ! copy to integer 
+          IF (BTEST(I32,J-1)) THEN                 ! test bit on 
+            NH = NH + 1                            ! increment hits found
+            HIT(NH)%MODULE = IMODULE               ! store module number
+            HIT(NH)%PATCH  = IPATCH                ! store patch number
+            X = IPTCHU(J)+IMIDPTCHU(IPATCH)        ! x-position within a module  
+            Y = IPTCHV(J)+IMIDPTCHV(IPATCH)        ! y-position 
+            A = MODULE(IMODULE)%A                  ! get rotation matrix
+            B = MODULE(IMODULE)%B                  !   coefficients for 
+            C = MODULE(IMODULE)%C                  !   this module 
+            D = MODULE(IMODULE)%D                  !   ready to use 
+            U = A*X + B*Y                          ! rotate, module 
+            V = C*X + D*Y                          ! rotate, module 
+            U = U + MODULE(IMODULE)%U              ! translate module in u  
+            V = V + MODULE(IMODULE)%V              ! translate module in v 
+
+! in November 1999 RWL/SMB inverted Granite display to match HV and CCD
+! U and V co-ordinates of pixels changed as a result, so now trying to
+! get PST display to match ADC display:
+
+            U = -1*U
+            V = -1*V
+
+            HIT(NH)%UPOS  = U                      ! store u-position 
+            HIT(NH)%VPOS  = V                      ! store v-position 
+            HIT(NH)%PIXEL = PIXEL(U,V)             ! store pixel number
+          ENDIF
+        ENDDO                                      ! next bit
+
+      ENDDO
+         
+      RETURN
+      END SUBROUTINE GTR_DECODE_PST
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GTR_MONITOR(CHOPT)  
+
+!-------------------------------------------------------------------------------
+!     monitor number of hits per pixel, patch and module
+!-------------------------------------------------------------------------------
+
+      IMPLICIT NONE 
+
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL :: CHOPT 
+
+      TYPE(GTR_HIT_T), POINTER :: HIT(:)      ! decoding result 
+
+      INTEGER          :: IPIX, IPAT, IMOD    ! array indices 
+      
+      INTEGER,PARAMETER  :: IC = GCA_CAMERA_10M                     ! set camera to 10m 
+      INTEGER :: NW                           ! number of data words  
+      INTEGER :: I,I1,I2
+
+!-------------------------------------------------------------------------------
+!     
+!-------------------------------------------------------------------------------
+      IF (PRESENT(CHOPT)) THEN 
+        IF (INDEX(CHOPT,"RESET").GE.1) THEN 
+          GTR_STA%EVENTS  = 0 
+          GTR_STA%PIXEL   = 0 
+          GTR_STA%PATCH   = 0 
+          GTR_STA%TOTAL   = 0
+          GTR_STA%PERCENT = 0   
+          RETURN 
+        ENDIF  
+      END IF 
+!-------------------------------------------------------------------------------
+!     decode trigger bits      
+!-------------------------------------------------------------------------------
+!
+!     Eventually this should perhaps be done outside this routine, 
+!     before this routine is called. 
+!----
+      IF (.NOT.GDF_EV10%NEW) RETURN                 ! any new data at all?
+      NW = GDF_EV10%NTRG                       ! number of trigger words 
+      IF (NW.LE.0) RETURN                      ! any trigger data at all?
+
+      CALL GTR_DECODE_PST(&                    ! decode trigger info
+        GDF_EV10%PATTERN(1:NW),&               ! input data
+        GCA_CAMERA(IC)%PIXEL,  &               ! look up table pixel(u,v) 
+        HIT)                                   ! decoding result 
+     
+!---- count number of hits 
+      IF (ASSOCIATED(HIT)) THEN 
+        GTR_STA%EVENTS = GTR_STA%EVENTS + 1 ! count events read  
+        GTR_STA%FIRED  = 0 
+        I1 = LBOUND(HIT,1)
+        I2 = UBOUND(HIT,1)
+        DO I=I1,I2                                   ! for all hits 
+          IPIX = HIT(I)%PIXEL                        ! get pixel number 
+          IPAT = HIT(I)%PATCH                        ! get patch number 
+          IMOD = HIT(I)%MODULE                       ! get module number 
+          GTR_STA%FIRED(IPIX)     =GTR_STA%FIRED(IPIX)     +1 ! hits this event
+          GTR_STA%TOTAL(IPIX)     =GTR_STA%TOTAL(IPIX)     +1 ! hits this event 
+          GTR_STA%PATCH(IPAT,IMOD)=GTR_STA%PATCH(IPAT,IMOD)+1 ! increment 
+        ENDDO 
+        
+        WHERE (GTR_STA%FIRED.GT.0) 
+          GTR_STA%PIXEL = GTR_STA%PIXEL + 1  ! increment
+        ENDWHERE 
+
+!---        GTR_STA%PERCENT = 1E2 * GTR_STA%PIXEL / GTR_STA%EVENTS 
+        GTR_STA%PERCENT = (100.0 * GTR_STA%PIXEL) / GTR_STA%EVENTS 
+      ENDIF       
+
+!---- give higher weight to recent events 
+      IF (GTR_STA%EVENTS.EQ.1000) THEN 
+        GTR_STA%EVENTS = 0.9 * GTR_STA%EVENTS 
+        GTR_STA%TOTAL  = 0.9 * GTR_STA%TOTAL 
+        GTR_STA%PIXEL  = 0.9 * GTR_STA%PIXEL 
+        GTR_STA%PATCH  = 0.9 * GTR_STA%PATCH 
+      ENDIF 
+
+      RETURN
+      END SUBROUTINE  GTR_MONITOR
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GTR_SHOW_MAP(IT)  
+       
+      INTEGER,INTENT(IN) :: IT 
+      INTEGER            :: IERR 
+
+      IF (GTR_STA%EVENTS.LE.0) RETURN           ! no data to display 
+
+      CALL GCA_DISPLAY(IT,& 
+        GTR_STA%PERCENT,'X',& 
+        GTR_STA%COLOR,& 
+        IERR)                      ! display it
+
+      CALL GCA_PIXEL(IT,IERR)  ! show selected pixel
+      CALL GTR_PLOT_LIST  
+
+      RETURN
+      END SUBROUTINE GTR_SHOW_MAP 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      END MODULE GTR

@@ -1,0 +1,475 @@
+
+    
+      MODULE GDI  
+!-------------------------------------------------------------------------------
+!
+!     This module controls the graphics display. 
+!
+!     It invokes other modules to provide the screen content. 
+!
+!     A display operation may take place either at the end of the event loop 
+!     in or when a request to update an existing image is made via the mouse 
+!     button.
+!
+!     Any external module subroutine invoked by this module has no control  
+!     over when this happens or whether it is called at all. 
+!     "Do not call us, we call you". Be prepared to act at any time. 
+!
+!-------------------------------------------------------------------------------
+
+!Modified:
+
+! 13/11/01 GHS
+!	In GDI_UPDATE: Test that an image arleady exits(arrays for it are
+!	allocated) before we try to update it. This prevent crashes when 
+!	choosing a new display type before any run is started.     
+
+! 13/03/02 GHS
+!	Add calls to GCA_PLOT_CFD in GR_DISPLAY to tag Disabled CFD channels
+!       in the image dispalys.
+
+      USE GHI            ! HIGZ graphics 
+      USE GOS            ! operating system 
+      USE GCA            ! camera details 
+      USE GMO            ! monitoring results  
+      USE GIM            ! images 
+      USE GTR            ! trigger 
+      USE GPA            ! image parameter 
+      USE GTE            ! telescopes 
+
+      IMPLICIT NONE 
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      PRIVATE 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+!-------------------------------------------------------------------------------
+!     public subroutines 
+!-------------------------------------------------------------------------------
+      PUBLIC  GDI_ACTION   ! KUIP action routine 
+      PUBLIC  GDI_INIT     ! initialize graphics 
+      PUBLIC  GDI_START    ! thread entry point
+      PUBLIC  GDI_UPDATE   ! update screen 
+!-------------------------------------------------------------------------------
+!     control flags to communicate with other threads
+!-------------------------------------------------------------------------------
+      TYPE, PUBLIC :: GDI_CTRL_T
+        LOGICAL        QUIT            ! request for a nasty quick exit 
+        INTEGER    ::  IDH             ! workstation identifier 
+        INTEGER    ::  CHOICE          ! selected display  
+        logical    ::  update          ! If true, display Updates enabled.
+      END TYPE GDI_CTRL_T 
+
+      TYPE(GDI_CTRL_T), PUBLIC :: GDI_CTRL
+!-------------------------------------------------------------------------------
+!     data available to other threads 
+!-------------------------------------------------------------------------------
+      TYPE, PUBLIC :: GDI_DATA_T
+        INTEGER    ::  ADC               ! ADC channel 
+        REAL       ::  MAX               ! max of MAX values 
+        REAL       ::  TIME              ! rate plot - time 
+        REAL       ::  RATE              !           - rate 
+      END TYPE GDI_DATA_T 
+
+      TYPE(GDI_DATA_T), PUBLIC :: GDI_DATA    
+
+!-------------------------------------------------------------------------------
+!     enumerator of displays 
+!-------------------------------------------------------------------------------
+      INTEGER, PARAMETER :: &  
+        GDI_CHOICE_ADC       = 1, & 
+        GDI_CHOICE_SIGNAL    = 2, &
+        GDI_CHOICE_TRIGGER   = 3, &
+        GDI_CHOICE_SCALER    = 4, & 
+        GDI_CHOICE_PARAMETER = 5, & 
+        GDI_CHOICE_QUALITY   = 6
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      INTEGER, PARAMETER :: GDI_NT_CAMERA = 10 
+      INTEGER, PARAMETER :: GDI_NT_ADC    = 30 
+      INTEGER, PARAMETER :: GDI_TELESCOPE =  1 
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      CONTAINS
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GDI_ACTION
+!-------------------------------------------------------------------------------
+!     KUIP interface routine 
+!-------------------------------------------------------------------------------
+      CHARACTER(*), PARAMETER :: SRN="GDI_ACTION"
+      CHARACTER(80)           :: MSG  
+      CHARACTER(80)           :: CMD
+      INTEGER                 :: LEN 
+      INTEGER                 :: IERR 
+      CHARACTER(32)           :: THREAD
+      INTEGER                 :: NPAR     
+      INTEGER                 :: I 
+      REAL                    :: TIME           ! [seconds] 
+
+      CALL KUPATL(CMD,NPAR) 
+      CALL CLTOU(CMD)                      ! convert to upper case 
+      SELECT CASE(CMD) 
+!-------------------------------------------------------------------------------
+!     select display 
+!-------------------------------------------------------------------------------
+      CASE("ADC") 
+        GDI_CTRL%CHOICE = GDI_CHOICE_ADC
+        CALL GDI_UPDATE  
+      CASE("SIGNAL") 
+        GDI_CTRL%CHOICE = GDI_CHOICE_SIGNAL 
+        CALL GDI_UPDATE  
+      CASE("TRIGGER") 
+        GDI_CTRL%CHOICE = GDI_CHOICE_TRIGGER 
+        CALL GDI_UPDATE  
+      CASE("SCALER") 
+        GDI_CTRL%CHOICE = GDI_CHOICE_SCALER 
+        CALL GDI_UPDATE  
+      CASE("PARAMETER") 
+        GDI_CTRL%CHOICE = GDI_CHOICE_PARAMETER 
+        CALL GDI_UPDATE  
+      CASE("QUALITY") 
+        GDI_CTRL%CHOICE = GDI_CHOICE_QUALITY 
+        CALL GDI_UPDATE  
+!-------------------------------------------------------------------------------
+!     start a new thread
+!-------------------------------------------------------------------------------
+      CASE ("START") 
+	  CALL GOS_CREATE_THREAD(& 
+          GOS_THREAD%CURSOR,&
+          GDI_START,&
+          IERR)
+!-------------------------------------------------------------------------------
+!     stop analysis thread  
+!-------------------------------------------------------------------------------
+      CASE ('STOP') 
+        GDI_CTRL%QUIT = .TRUE.
+!-------------------------------------------------------------------------------
+!    whoops, ....      
+!-------------------------------------------------------------------------------
+      CASE default
+        MSG = "Unknown command "//CMD 
+        IERR = GOS_ERROR(SRN,TRIM(MSG),1)
+        RETURN 
+      END SELECT 
+
+      END SUBROUTINE GDI_ACTION
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GDI_ADC(IERR)  
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      INTEGER, INTENT(OUT) :: IERR 
+
+      INTEGER,PARAMETER   :: IT = GDI_TELESCOPE 
+      CHARACTER(LEN=132)  :: TEXT 
+
+      REAL     :: XMI,XMA,YMI,YMA 
+      REAL     :: X1,X2,Y1,Y2,DX,DY,DZ,X,Y,Z   
+      REAL     :: A,B,C 
+
+      INTEGER I 
+
+      IF (GDI_DATA%ADC.LE.0) THEN 
+        IERR = 1 
+        RETURN 
+      ELSE 
+        IERR = 1 
+      ENDIF 
+
+      CALL GMO_MAX(XMI,XMA,YMI,YMA) 
+
+      DX = (XMA-XMI) / 20 
+      DY = (YMA-YMI) / 10 
+      DZ = DY * 0.7 
+      X1 = XMA - 4 * DX 
+      X2 = XMA - 1 * DX 
+      Y1 = YMA - 2 * DY 
+      Y2 = YMA - 1 * DY 
+
+      CALL IGPAVE(X1,X2,Y1,Y2,DZ,& 
+        1000+GHI_RED,& 
+        1000+GHI_FRONT,& 
+        "TR") 
+
+      CALL HPLFRA(XMI,XMA,YMI,YMA,'S') 
+      X = MAX(X1,X2)-1.5*DX
+      Y = MIN(Y1,Y2)+0.5*(DY-DZ)  
+      WRITE(TEXT,'(I4)') GDI_DATA%ADC 
+      call igtext(X,Y,TRIM(TEXT),DZ,0.0,'C')             
+      PRINT*,X,Y,TRIM(TEXT),DZ 
+
+       X = GDI_DATA%ADC
+       Y = GDI_DATA%MAX
+       CALL IGSET('MTYP',20.0)   
+!      CALL IGSET('MSCF', 2.0)   
+       CALL IGSET('PMCI',FLOAT(GHI_RED))  
+       CALL IPM(1,X,Y) 
+       CALL IGSET('MTYP',0.0)   
+!      CALL IGSET('MSCF',0.0)   
+       CALL IGSET('PMCI',0.0)   
+
+      END SUBROUTINE GDI_ADC
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GDI_INIT(WP,HP,NN) 
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+
+      INTEGER, INTENT(IN)  :: WP                 ! HIGZ window width  [pixels]
+      INTEGER, INTENT(IN)  :: HP                 ! HIGZ window height [pixels]
+      INTEGER, INTENT(OUT) :: NN                 ! size of PAWC 
+
+!---- PAWC
+      INTEGER,PARAMETER   :: MBYTE=256*1014      ! number of 4-byte words
+      INTEGER,PARAMETER   :: NW=8*MBYTE          ! size of PAWC 
+      REAL       Q                               ! dummy variable 
+      COMMON / PAWC / Q(NW)                      ! HBOOK memory 
+
+!---- misc items 
+      INTEGER IERR 
+      INTEGER I,J                                ! loop variables 
+      INTEGER IDH / 1 /                          ! Higz window type 
+      INTEGER IDX                                ! X11 window id
+      CHARACTER(LEN=*),PARAMETER :: SRN="GDI_INIT"
+
+!-------------------------------------------------------------------------------
+!     init HBOOK and HIGZ 
+!-------------------------------------------------------------------------------
+      NN = NW 
+      call hlimit(NW)                            ! init PAWC storage   
+      call iginit(NW/3)                          ! init HIGZ part 
+      call htitle(' ')                           ! set plot title 
+!!!   CALL IGWKTY(K)                             ! get workstation type 
+      CALL HPLINT(IDH)                           ! let HPLOT open window 
+      GDI_CTRL%IDH = IDH                         ! workstation identifier  
+      CALL IXGETWI(IDH,IDX)                      ! get X id 
+      CALL IXRSCWI(IDX,WP,HP)                    ! resize window 
+      call hplopt('TIC', 1)                      ! 
+      call hplopt('SQR', 1)                      ! 
+      call hplopt('NBOX',1)                      ! no box around plots 
+      call hplopt('ZFL1',1)                      ! keep last picture in memory  
+      call hplopt('NPTO', 1)                     ! PTO=Please turn over
+      CALL HPLSET('XSIZ',20.0)                   ! x - window size [cm]
+      CALL HPLSET('YSIZ',26.5)                   ! y -             [cm]
+      CALL HPLSET('YWIN',4.00)
+      CALL HPLSET('XWIN',1.50)
+      CALL HPLSET('XMGR',0.50)
+      CALL HPLSET('XMGL',1.50)
+      CALL HPLSET('YMGU',0.50)
+      CALL HPLSET('YMGL',8.00)
+      CALL HPLSET('CSIZ',0.18)                   ! comment size 
+      CALL HPLSET('ASIZ',0.18)                   ! axis label size 
+      CALL HPLSET('KSIZ',0.18)                   ! character size
+      CALL HPLSET('SSIZ',0.18)                   ! asterix size
+      CALL HPLSET('VSIZ',0.18)                   ! axis value size
+      CALL HPLSET('CFON',1.)                     ! comment font 
+      CALL HPLSET('GFON',1.)                     ! global title font 
+      CALL HPLSET('LFON',1.)                     ! axis label font 
+      CALL HPLSET('TFON',1.)                     ! general comments font
+      CALL HPLSET('VFON',1.)                     ! axis value font
+!-------------------------------------------------------------------------------
+!     assign default values 
+!-------------------------------------------------------------------------------
+      GDI_CTRL%CHOICE = GDI_CHOICE_SIGNAL      
+
+      END SUBROUTINE GDI_INIT 
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GDI_START
+!-------------------------------------------------------------------------------
+!     first routine that is called when the thread is created 
+!-------------------------------------------------------------------------------
+!Modified:
+
+!	14/03/02 GHS
+!		Init the gmo_ctrl%update flag here to enable updates.
+
+      INTEGER IERR 
+      INTEGER STATUS 
+      CHARACTER(*), PARAMETER :: SRN="GDI_START"
+
+      INTEGER ISTAT,NT 
+      REAL    PX,PY 
+
+      INTEGER,PARAMETER :: IT = GDI_TELESCOPE 
+      INTEGER,PARAMETER :: ISTAT_LEFT  = 11
+      INTEGER,PARAMETER :: ISTAT_RIGHT = 13
+
+      INTEGER I,I1,I2 
+      REAL    XD,YD,RD
+
+      GDI_CTRL%QUIT = .FALSE.                        ! reset flag 
+      gmo_ctrl%update= .true.                        ! Dispaly update enable.
+ 
+      DO WHILE(.NOT.GDI_CTRL%QUIT) 
+
+        CALL IRQLC(GDI_CTRL%IDH,-10,ISTAT,NT,PX,PY) 
+!!      PRINT*,ISTAT,NT,PX,PY 
+
+!-------------------------------------------------------------------------------
+!       Find pixel 
+!-------------------------------------------------------------------------------
+        IF (NT.EQ.GDI_NT_CAMERA) THEN 
+          IF (ISTAT.EQ.ISTAT_RIGHT) THEN 
+            GCA_CAMERA(IT)%SELECTED = 0 
+          ELSE IF (ISTAT.EQ.ISTAT_LEFT) THEN 
+            IF (ASSOCIATED(GCA_CAMERA(IT)%XDEG)) THEN 
+              I1 = LBOUND(GCA_CAMERA(IT)%XDEG,1) 
+              I2 = UBOUND(GCA_CAMERA(IT)%XDEG,1) 
+              DO I=I1,I2
+                XD = GCA_CAMERA(IT)%XDEG(I) - PX     
+                YD = GCA_CAMERA(IT)%YDEG(I) - PY   
+                RD = SQRT( XD**2 + YD**2 )   
+                IF (RD.LE.GCA_CAMERA(IT)%RDEG(I)) THEN 
+                  PRINT*,"Pixel ",I 
+                  GCA_CAMERA(IT)%SELECTED = I 
+                  CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)      
+                  CALL GDI_UPDATE 
+                  CALL IUWK(0,1) 
+                  CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)       
+                  EXIT 
+                END IF 
+              ENDDO  
+            ENDIF 
+          ENDIF 
+        ENDIF 
+!-------------------------------------------------------------------------------
+!       Find ADC channel 
+!-------------------------------------------------------------------------------
+        IF (NT.EQ.GDI_NT_ADC) THEN 
+          IF (ISTAT.EQ.ISTAT_RIGHT) THEN 
+            GDI_DATA%ADC = 0 
+          ELSE IF (ISTAT.EQ.ISTAT_LEFT) THEN 
+            PRINT*,"ADC ",PX 
+            GDI_DATA%ADC = NINT(PX)  
+            GDI_DATA%MAX = NINT(PY)  
+            CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)      
+            CALL GDI_ADC(IERR)  
+            CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)       
+          END IF 
+        ENDIF 
+
+      ENDDO 
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+
+      PRINT*,"Cursor thread terminates"
+
+!-------------------------------------------------------------------------------
+!     request access to CERNLIBS 
+!-------------------------------------------------------------------------------
+!      CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)
+!      IF (IERR.NE.0) THEN 
+!        IERR = GOS_ERROR(SRN,"No access to CERNLIBs.",IERR) 
+!        RETURN 
+!      ENDIF 
+
+
+      END SUBROUTINE GDI_START 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+                                
+      SUBROUTINE GDI_UPDATE
+!-------------------------------------------------------------------------------
+!	Update display now! 
+!-------------------------------------------------------------------------------
+!Modified:
+
+! 13/11/01 GHS
+!	In GDI_UPDATE: Test that an image arleady exits(arrays for it are
+!	allocated) before we try to update it. This prevent crashes when 
+!	choosing a new display type before any run is started.     
+
+! 13/03/02 GHS
+!	Add calls to GCA_PLOT_CFD to tag Disabled CFD channels
+!       in the image dispalys.
+
+! 14/03/02 GHS
+!       Add flag gmo_ctrl%update that disables (freezes) display updates. This
+!       is for use with the Freeze and Continue buttons only.
+
+      IMPLICIT NONE
+
+      INTEGER I 
+      INTEGER IERR 
+      INTEGER,PARAMETER :: IT = GIM_IMAGE_10M 
+		!Flags that a display already exists before we try to redraw it.
+      logical :: display_exists,camera_defined 
+
+      display_exists=associated(gim_ctrl%image)
+      camera_defined=associated(gca_camera)
+	SELECT CASE(GDI_CTRL%CHOICE) 
+
+      case(GDI_CHOICE_ADC) 
+				    !We can't update a non-existant display
+        if(gmo_ctrl%update.and.camera_defined.and.display_exists)then
+	  CALL HPLOPT('SQR', 1)
+          CALL HPLSET('YMGL',8.00)
+          CALL HPLZON(1,1,1," ") 
+          GIM_CTRL%IMAGE => GIM_IMAGE(IT)%ADC_RAW
+          CALL GIM_SHOW_IMAGE(IT) 
+	  call gca_plot_cfd     !Plot CFD diasabled tags.
+          CALL GTR_PLOT_PST
+          CALL HPLOPT('NSQR', 1)
+          CALL HPLSET('YMGL',1.00)
+          CALL HPLZON(2,3,5,"S")
+          CALL GMO_RATE("S") 
+      	endif
+      case(GDI_CHOICE_SIGNAL)
+			  !We can't update a non-existant display
+        if(gmo_ctrl%update.and.camera_defined.and.display_exists)then
+          CALL HPLOPT('SQR', 1)
+          CALL HPLSET('YMGL',8.00)
+          CALL HPLZON(1,1,1," ") 
+          GIM_CTRL%IMAGE=> GIM_IMAGE(IT)%ADC_SIG
+          CALL GIM_SHOW_IMAGE(IT) 
+	  call gca_plot_cfd     !Plot CFD diasabled tags.
+          CALL GTR_PLOT_PST
+!          CALL GPA_ELLIPSE(GPA_PARA(GTE_TELE_10M),"",IERR)
+          CALL HPLOPT('NSQR', 1)
+          CALL HPLSET('YMGL',1.00)
+          CALL HPLZON(2,3,5,"S")
+          CALL GMO_RATE("S") 
+	endif
+      case(GDI_CHOICE_TRIGGER)
+				    !We can't update a non-existant display
+        if(gmo_ctrl%update.and.camera_defined.and.display_exists)then
+          CALL HPLOPT('SQR', 1)
+          CALL HPLSET('YMGL',8.00)
+          CALL HPLZON(1,1,1," ") 
+          CALL GTR_SHOW_MAP(IT)  
+	  call gca_plot_cfd     !Place CFD diasabled tags after image
+			          !Thus tags wont get covered up.
+          CALL HPLOPT('NSQR', 1)
+          CALL HPLSET('YMGL',1.00)
+          CALL HPLZON(2,3,5,"S")
+          CALL GMO_RATE("S") 
+	endif
+      case (GDI_CHOICE_SCALER)
+			   !We can't update a non-existant display
+        if(gmo_ctrl%update.and.camera_defined.and.display_exists)then
+!         CALL HPLFRA(0.0,1.0,0.0,1.0," ") 
+!         CALL HPLFRA(0.0,1.0,0.0,1.0," ") 
+	endif
+      case (GDI_CHOICE_PARAMETER) 
+
+      case (GDI_CHOICE_QUALITY) 
+
+      CASE default
+        return
+      END SELECT 
+
+      CALL IUWK(0,1) 
+
+      END SUBROUTINE GDI_UPDATE 
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      END MODULE GDI 
+

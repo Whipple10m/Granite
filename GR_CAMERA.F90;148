@@ -1,0 +1,937 @@
+
+     MODULE GCA
+!-------------------------------------------------------------------------------
+!    define camera geometry and display camera 
+!-------------------------------------------------------------------------------
+!
+!    - remove module wide variable as subroutine arguments   
+!    - tidy up gca_plot_signal 
+!    - decide on one status variable, camera or image?
+!    - decide how to globaly number telescopes, new module? 
+!    - correct 96/97 camera geometry 
+!    - 13/03/02 GHS - Add to select pixel display the CFD disable flag. 
+!    - 13/03/02 GHS - Add a GCA_PLOT_CFD routine to tag Disabled CFD's
+!-------------------------------------------------------------------------------
+
+     USE GOS 
+     USE GDF
+
+     PRIVATE 
+
+     INTEGER, PUBLIC, PARAMETER :: GCA_CAMERA_MAX =  8  ! max number of images 
+     INTEGER, PUBLIC, PARAMETER :: GCA_CAMERA_10M =  1   
+
+     TYPE, PUBLIC :: GCA_CAMERA_T 
+       REAL,    POINTER  :: XDEG(:)    ! x-deg of pixel   
+       REAL,    POINTER  :: YDEG(:)    ! y-deg 
+       REAL,    POINTER  :: RDEG(:)    ! pixel radius 
+       INTEGER, POINTER  :: UPOS(:)    ! u-coordiate 
+       INTEGER, POINTER  :: VPOS(:)    ! v- 
+       INTEGER, POINTER  :: PIXEL(:,:) ! pixel(u,v)
+       INTEGER, POINTER  :: STATUS(:)  ! pixel status 
+       REAL              :: WDEG       ! half the width of field of view [deg]
+       REAL              :: HEIGHT     ! text height 
+       REAL              :: VSPACE     ! vertical line spaceing 
+       REAL              :: HSPACE     ! horizontal column line spacing 
+       INTEGER           :: SELECTED   ! selected by cursor 
+     END TYPE GCA_CAMERA_T
+
+     TYPE(GCA_CAMERA_T), PUBLIC, POINTER :: GCA_CAMERA(:)   
+!!   TYPE(GCA_CAMERA_T), PUBLIC, SAVE    :: GCA_CAMERA(GCA_CAMERA_MAX)   
+
+!-------------------------------------------------------------------------------
+!    control flags     
+!-------------------------------------------------------------------------------
+     TYPE(GCA_CTRL_T)
+       INTEGER RANGE                      ! display z-axis max
+     END TYPE
+     TYPE(GCA_CTRL_T) GCA_CTRL
+
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+     PUBLIC GCA_DEFINE 
+     PUBLIC GCA_DISPLAY  
+     PUBLIC GCA_PLOT_PMT 
+     PUBLIC GCA_PLOT_CFD 
+     PUBLIC GCA_INIT 
+     PUBLIC GCA_KUIP 
+     PUBLIC GCA_PIXEL  
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      CONTAINS 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GCA_DEFINE(RUN,IERR)
+!-------------------------------------------------------------------------------
+!     define camera geometry 
+!-------------------------------------------------------------------------------
+
+      IMPLICIT NONE 
+
+!---- arguments  
+      INTEGER :: RUN 
+      INTEGER :: IERR  
+
+      INTEGER  :: I 
+      INTEGER  :: N
+      INTEGER  :: IC 
+      
+
+      REAL, POINTER    :: XDEG(:), YDEG(:), RDEG(:)
+      INTEGER, POINTER :: STAT(:), UPOS(:), VPOS(:) 
+      INTEGER, POINTER :: PIXEL(:,:)
+
+      CHARACTER(*), PARAMETER :: SRN="GCA_DEFINE"
+      CHARACTER(80)           :: MSG  
+
+      REAL :: SCALE                ! distance scale in U,V directions 
+
+
+!-------------------------------------------------------------------------------
+!     allocate cameras 
+!-------------------------------------------------------------------------------
+      IF (.NOT.ASSOCIATED(GCA_CAMERA)) THEN 
+        PRINT*,"Creating camera"
+        ALLOCATE(GCA_CAMERA(GCA_CAMERA_MAX))    
+      ENDIF 
+!-------------------------------------------------------------------------------
+!     129 pixel camera 
+!-------------------------------------------------------------------------------
+      IF (RUN.LT.8000) THEN 
+        IC = GCA_CAMERA_10M
+
+        ALLOCATE(GCA_CAMERA(IC)%XDEG(  127))
+        ALLOCATE(GCA_CAMERA(IC)%YDEG(  127)) 
+        ALLOCATE(GCA_CAMERA(IC)%RDEG(  127))  
+        ALLOCATE(GCA_CAMERA(IC)%STATUS(127))
+        ALLOCATE(GCA_CAMERA(IC)%UPOS  (127))
+        ALLOCATE(GCA_CAMERA(IC)%VPOS  (127))
+        ALLOCATE(GCA_CAMERA(IC)%PIXEL (-7:7,-7:7))
+
+        XDEG => GCA_CAMERA(IC)%XDEG
+        YDEG => GCA_CAMERA(IC)%YDEG   
+        RDEG => GCA_CAMERA(IC)%RDEG   
+        STAT => GCA_CAMERA(IC)%STATUS 
+        UPOS => GCA_CAMERA(IC)%UPOS  
+        VPOS => GCA_CAMERA(IC)%VPOS 
+        PIXEL => GCA_CAMERA(IC)%PIXEL  
+
+        CALL GCA_MAKE_HEXAGON(0.25*0,0,N,XDEG,YDEG)  ! center tube   1
+        CALL GCA_MAKE_HEXAGON(0.25*1,1,N,XDEG,YDEG)  ! 1. hexagon    7
+        CALL GCA_MAKE_HEXAGON(0.25*2,2,N,XDEG,YDEG)  ! 2.           19
+        CALL GCA_MAKE_HEXAGON(0.25*3,3,N,XDEG,YDEG)  ! 3.           37
+        CALL GCA_MAKE_HEXAGON(0.25*4,4,N,XDEG,YDEG)  ! 4.           61
+        CALL GCA_MAKE_HEXAGON(0.25*5,5,N,XDEG,YDEG)  ! 5            97
+        CALL GCA_MAKE_HEXAGON(0.25*6,6,N,XDEG,YDEG)  ! outer tubes 129
+        RDEG  = 0.1                                   ! true ?????
+        STAT  = 0 
+        SCALE = 0.25
+!-------------------------------------------------------------------------------
+!     169 pixel camera 
+!-------------------------------------------------------------------------------
+      ELSE IF (RUN.LT.9000) THEN 
+        IC = GCA_CAMERA_10M
+        ALLOCATE(GCA_CAMERA(IC)%XDEG(  169))
+        ALLOCATE(GCA_CAMERA(IC)%YDEG(  169)) 
+        ALLOCATE(GCA_CAMERA(IC)%RDEG(  169))  
+        ALLOCATE(GCA_CAMERA(IC)%STATUS(169))
+        ALLOCATE(GCA_CAMERA(IC)%UPOS  (169))
+        ALLOCATE(GCA_CAMERA(IC)%VPOS  (169))
+        ALLOCATE(GCA_CAMERA(IC)%PIXEL (-8:8,-8:8))
+
+        XDEG => GCA_CAMERA(IC)%XDEG
+        YDEG => GCA_CAMERA(IC)%YDEG   
+        RDEG => GCA_CAMERA(IC)%RDEG   
+        STAT => GCA_CAMERA(IC)%STATUS 
+        UPOS => GCA_CAMERA(IC)%UPOS  
+        VPOS => GCA_CAMERA(IC)%VPOS 
+        PIXEL => GCA_CAMERA(IC)%PIXEL  
+
+        CALL GCA_MAKE_HEXAGON(0.25*0,0,N,XDEG,YDEG)  ! center tube   1
+        CALL GCA_MAKE_HEXAGON(0.25*1,1,N,XDEG,YDEG)  ! 1. hexagon    7
+        CALL GCA_MAKE_HEXAGON(0.25*2,2,N,XDEG,YDEG)  ! 2.           19
+        CALL GCA_MAKE_HEXAGON(0.25*3,3,N,XDEG,YDEG)  ! 3.           37
+        CALL GCA_MAKE_HEXAGON(0.25*4,4,N,XDEG,YDEG)  ! 4.           61
+        CALL GCA_MAKE_HEXAGON(0.25*5,5,N,XDEG,YDEG)  ! 5            97
+        CALL GCA_MAKE_HEXAGON(0.25*6,6,N,XDEG,YDEG)  ! outer tubes 129
+        CALL GCA_MAKE_HEXAGON(0.25*7,7,N,XDEG,YDEG)  ! outer tubes 169 
+        RDEG = 0.1                                   ! true ?????
+        STAT = 0 
+        SCALE = 0.25
+!-------------------------------------------------------------------------------
+!     331 pixel camera (until June 24th 1999)
+!-------------------------------------------------------------------------------
+      ELSE IF (RUN.LT.13169) THEN 
+        IC = GCA_CAMERA_10M
+        ALLOCATE(GCA_CAMERA(IC)%XDEG(  331))
+        ALLOCATE(GCA_CAMERA(IC)%YDEG(  331)) 
+        ALLOCATE(GCA_CAMERA(IC)%RDEG(  331))  
+        ALLOCATE(GCA_CAMERA(IC)%STATUS(331))
+        ALLOCATE(GCA_CAMERA(IC)%UPOS  (331))
+        ALLOCATE(GCA_CAMERA(IC)%VPOS  (331))
+        ALLOCATE(GCA_CAMERA(IC)%PIXEL (-12:12,-12:12))
+
+        XDEG => GCA_CAMERA(IC)%XDEG
+        YDEG => GCA_CAMERA(IC)%YDEG   
+        RDEG => GCA_CAMERA(IC)%RDEG   
+        STAT => GCA_CAMERA(IC)%STATUS 
+        UPOS => GCA_CAMERA(IC)%UPOS  
+        VPOS => GCA_CAMERA(IC)%VPOS 
+        PIXEL => GCA_CAMERA(IC)%PIXEL  
+
+        CALL GCA_MAKE_HEXAGON(0.25* 0, 0,N,XDEG,YDEG) !   1 +  6
+        CALL GCA_MAKE_HEXAGON(0.25* 1, 1,N,XDEG,YDEG) !   7 + 12
+        CALL GCA_MAKE_HEXAGON(0.25* 2, 2,N,XDEG,YDEG) !  19 + 18 
+        CALL GCA_MAKE_HEXAGON(0.25* 3, 3,N,XDEG,YDEG) !  37 + 24
+        CALL GCA_MAKE_HEXAGON(0.25* 4, 4,N,XDEG,YDEG) !  61 + 30 
+        CALL GCA_MAKE_HEXAGON(0.25* 5, 5,N,XDEG,YDEG) !  97 + 36 
+        CALL GCA_MAKE_HEXAGON(0.25* 6, 6,N,XDEG,YDEG) ! 127 + 42
+        CALL GCA_MAKE_HEXAGON(0.25* 7, 7,N,XDEG,YDEG) ! 169 + 48 
+        CALL GCA_MAKE_HEXAGON(0.25* 8, 8,N,XDEG,YDEG) ! 217 + 54 
+        CALL GCA_MAKE_HEXAGON(0.25* 9, 9,N,XDEG,YDEG) ! 271 + 60  
+        CALL GCA_MAKE_HEXAGON(0.25*10,10,N,XDEG,YDEG) ! 331 
+        RDEG = 0.1                                    ! 
+        STAT = 0 
+        SCALE = 0.25
+
+!-------------------------------------------------------------------------------
+!     490 pixel camera (from September 1999)
+!-------------------------------------------------------------------------------
+
+      ELSE IF (RUN.LT.99000) THEN 
+        IC = GCA_CAMERA_10M
+        ALLOCATE(GCA_CAMERA(IC)%XDEG(  490))
+        ALLOCATE(GCA_CAMERA(IC)%YDEG(  490)) 
+        ALLOCATE(GCA_CAMERA(IC)%RDEG(  490))  
+        ALLOCATE(GCA_CAMERA(IC)%STATUS(490))
+
+! outer rings are circular - only use hexagonal grid for 
+! inner triggering 331 (used in gr_trigger.f90)
+
+        ALLOCATE(GCA_CAMERA(IC)%UPOS  (379))
+        ALLOCATE(GCA_CAMERA(IC)%VPOS  (379))
+        ALLOCATE(GCA_CAMERA(IC)%PIXEL (-13:13,-13:13))
+
+        XDEG => GCA_CAMERA(IC)%XDEG
+        YDEG => GCA_CAMERA(IC)%YDEG   
+        RDEG => GCA_CAMERA(IC)%RDEG   
+        STAT => GCA_CAMERA(IC)%STATUS 
+        UPOS => GCA_CAMERA(IC)%UPOS  
+        VPOS => GCA_CAMERA(IC)%VPOS 
+        PIXEL => GCA_CAMERA(IC)%PIXEL  
+
+        CALL GCA_MAKE_HEXAGON(0.1179* 0, 0,N,XDEG,YDEG) !   1 +  6
+        CALL GCA_MAKE_HEXAGON(0.1179* 1, 1,N,XDEG,YDEG) !   7 + 12
+        CALL GCA_MAKE_HEXAGON(0.1179* 2, 2,N,XDEG,YDEG) !  19 + 18 
+        CALL GCA_MAKE_HEXAGON(0.1179* 3, 3,N,XDEG,YDEG) !  37 + 24
+        CALL GCA_MAKE_HEXAGON(0.1179* 4, 4,N,XDEG,YDEG) !  61 + 30 
+        CALL GCA_MAKE_HEXAGON(0.1179* 5, 5,N,XDEG,YDEG) !  97 + 36 
+        CALL GCA_MAKE_HEXAGON(0.1179* 6, 6,N,XDEG,YDEG) ! 127 + 42
+        CALL GCA_MAKE_HEXAGON(0.1179* 7, 7,N,XDEG,YDEG) ! 169 + 48 
+        CALL GCA_MAKE_HEXAGON(0.1179* 8, 8,N,XDEG,YDEG) ! 217 + 54 
+        CALL GCA_MAKE_HEXAGON(0.1179* 9, 9,N,XDEG,YDEG) ! 271 + 60  
+        CALL GCA_MAKE_HEXAGON(0.1179*10,10,N,XDEG,YDEG) ! 331 
+
+
+
+        CALL GCA_MAKE_HEXAGON(0.1179*11,11,N,XDEG,YDEG,B'01111111100') ! incomplete
+!     outer hexagon of 0.1179 deg. pixels (eight where there would be 12).
+
+        RDEG = (0.1179/2.0)                                   
+        STAT = 0 
+        SCALE = 0.1179       ! distance scale in U,V directions
+
+
+!       now add rings of larger 0.233 deg. tubes outside inner hexagonal structure
+
+!       radius of first ring = sqrt( (2*0.1179)^2 + (10.5*0.1179)^2 ) + 0.233/2
+!       = "radius" of hexagon plus radius of one of the larger tubes  = 1.260207 + 0.233/2
+
+        CALL GCA_MAKE_RING(1.376707,37,N,XDEG,YDEG,0.0)
+    
+!       radius of next ring = radius of previous ring + height of triangle of side =
+!       pixel separation  =  1.376707 + 0.233*cos(30 deg.) = 1.376707 + 0.233*SQRT(3)/2
+
+!       1.376707+0.233*sqrt(3)/2 = 1.57849
+        CALL GCA_MAKE_RING(1.57849,37,N,XDEG,YDEG,0.5)
+
+!       radius of next ring = radius of previous ring +  0.233*sqrt(3)/2
+
+!       1.376707+0.233*sqrt(3) = 1.780274
+        CALL GCA_MAKE_RING(1.780274,37,N,XDEG,YDEG,0.0)
+       
+        RDEG(380:490) = (0.233/2)
+
+
+
+!-------------------------------------------------------------------------------
+!     which camera is this .... ?
+!-------------------------------------------------------------------------------
+      ELSE 
+        MSG  = "Unknown camera configuration"
+        IERR = GOS_ERROR(SRN,TRIM(MSG),1) 
+      ENDIF 
+
+!-------------------------------------------------------------------------------
+!     find (u,v) pixel coordinates  
+!-------------------------------------------------------------------------------
+      UPOS = NINT( (XDEG-YDEG/TAND(60.0)) / SCALE ) 
+      VPOS = NINT( (YDEG/SIND(60.0)) / SCALE ) 
+
+      PIXEL = 0 
+      DO I=LBOUND(UPOS,1),UBOUND(UPOS,1)   
+        PIXEL(UPOS(I),VPOS(I)) = I 
+      ENDDO  
+
+!       DO I=1,331  
+!         PRINT*,I,XDEG(I),YDEG(I),UPOS(I),VPOS(I),PIXEL(UPOS(I),VPOS(I)) 
+!       ENDDO 
+
+      END SUBROUTINE GCA_DEFINE  
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GCA_DISPLAY(IC,QUANTITY,CHOPT,COLOR,IERR)
+!-------------------------------------------------------------------------------
+!     display image seem by camera  
+!-------------------------------------------------------------------------------
+      IMPLICIT NONE 
+
+!---- arguments  
+      INTEGER            :: IC
+      REAL               :: QUANTITY(:)  
+      CHARACTER(LEN=*)   :: CHOPT 
+      INTEGER            :: COLOR(:)
+      INTEGER            :: IERR 
+      CHARACTER(LEN=80)  :: TEXT 
+      
+!---- 
+      REAL                 :: RANGE(2)
+      REAL                 :: PARAM(2)
+      INTEGER              :: I,I1,I2
+      INTEGER              :: L 
+
+!---- array QUANTITY may have different length from others ... 
+      IF (ASSOCIATED(GCA_CAMERA)) THEN           ! camera exists yet? 
+        I1 = MAX(LBOUND(QUANTITY,1),LBOUND(GCA_CAMERA(IC)%STATUS,1))
+        I2 = MIN(UBOUND(QUANTITY,1),UBOUND(GCA_CAMERA(IC)%STATUS,1)) 
+        CALL GCA_PLOT_PMT(&                      ! show pmt position   
+          IC,I1,I2, &                            ! camera, range of pixels  
+         (GCA_CAMERA(IC)%STATUS(I1:I2).EQ.0), &  ! selection  
+          CHOPT)                                 ! options
+
+      ELSE 
+        RETURN 
+      ENDIF  
+!-------------------------------------------------------------------------------
+!     set range 
+!-------------------------------------------------------------------------------
+      IF (GCA_CTRL%RANGE.GT.0) THEN 
+        RANGE(1) = 0 
+        RANGE(2) = GCA_CTRL%RANGE
+      ELSE
+        RANGE(1) = 0.0 
+        RANGE(2) = 1.2 * MAXVAL(QUANTITY) 
+      ENDIF 
+!-------------------------------------------------------------------------------
+!     give on-screen information on range 
+!-------------------------------------------------------------------------------
+      WRITE(TEXT,'(A,2F10.0)') 'range ',RANGE
+      L = LEN(TEXT) 
+      DO I=1,L-1
+        IF (TEXT(I:I+1).EQ."  ") THEN 
+          TEXT(I:L-1) = TEXT(I+1:L)
+          TEXT(L:L)     = " "
+        ENDIF 
+      ENDDO 
+      CALL IGTEXT(& 
+         GCA_CAMERA(IC)%WDEG-2*GCA_CAMERA(IC)%HSPACE, &   ! x right lower corner
+        -GCA_CAMERA(IC)%WDEG+5*GCA_CAMERA(IC)%VSPACE, &   ! y 
+         TRIM(TEXT), & 
+         GCA_CAMERA(IC)%HEIGHT,0.0,'R')            ! 
+!-------------------------------------------------------------------------------
+!     plot signal 
+!-------------------------------------------------------------------------------
+      CALL GCA_PLOT_SIGNAL(& 
+        GCA_CAMERA(IC)%XDEG,   &
+        GCA_CAMERA(IC)%YDEG,   & 
+        GCA_CAMERA(IC)%RDEG,   & 
+        QUANTITY,              & 
+        GCA_CAMERA(IC)%STATUS(I1:I2), & 
+        COLOR,RANGE,PARAM,CHOPT)   
+!-------------------------------------------------------------------------------
+!     give on-screen information on event/run 
+!-------------------------------------------------------------------------------
+      IF (IC.EQ.GCA_CAMERA_10M) THEN 
+        WRITE(TEXT,*) 'run, event',GDF_EV10%RUN,GDF_EV10%EVENT 
+        L = LEN(TEXT) 
+        DO I=1,L-1
+          IF (TEXT(I:I+1).EQ."  ") THEN 
+            TEXT(I:L-1) = TEXT(I+1:L)
+            TEXT(L:L)     = " "
+          ENDIF 
+        ENDDO 
+        CALL IGTEXT(& 
+           GCA_CAMERA(IC)%WDEG-2*GCA_CAMERA(IC)%HSPACE, &   ! x right lower corner
+          -GCA_CAMERA(IC)%WDEG+2*GCA_CAMERA(IC)%VSPACE, &   ! y 
+           TRIM(TEXT), & 
+           GCA_CAMERA(IC)%HEIGHT,0.0,'R')            ! 
+      ENDIF 
+
+      END SUBROUTINE GCA_DISPLAY  
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GCA_INIT 
+      NULLIFY(GCA_CAMERA) 
+      END SUBROUTINE GCA_INIT 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GCA_KUIP
+!-------------------------------------------------------------------------------
+!     KUIP action routine interface 
+!-------------------------------------------------------------------------------
+      IMPLICIT NONE      
+
+      CHARACTER(*), PARAMETER :: SRN="GCA_KUIP"
+      CHARACTER(80)           :: MSG  
+      CHARACTER(80)           :: CMD
+      INTEGER                 :: LEN 
+      INTEGER                 :: IERR 
+
+      CALL KUPATL(CMD,LEN) 
+      IF (CMD.EQ."RANGE") THEN 
+        CALL KUGETI(GCA_CTRL%RANGE)
+      ELSE
+        MSG = "Unknown command "//CMD 
+        IERR = GOS_ERROR(SRN,TRIM(MSG),1)
+        RETURN 
+      ENDIF 
+
+      END SUBROUTINE GCA_KUIP
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+ 
+      SUBROUTINE GCA_MAKE_HEXAGON(RADIUS,NT,N,X,Y,select) 
+
+!-------------------------------------------------------------------------------
+!     Compute x,y coordinates of tubes on a a hexagon  
+!-------------------------------------------------------------------------------
+      IMPLICIT NONE 
+
+!---- arguments 
+      REAL     RADIUS    ! distance of corner tubes from center 
+      INTEGER  NT        ! number of tubes per side of hexagon       
+      INTEGER  N         ! total number of tubes so far
+      REAL     X(:),Y(:) ! tube position 
+      INTEGER, OPTIONAL ::  SELECT
+      INTEGER  CHOICE
+
+!---- 
+      REAL     EPS           ! 
+      REAL     STEP          ! pi/3.0
+      REAL     XC(7),YC(7)   ! the seven corners 
+      INTEGER  I,J
+
+!---- central tube? 
+      IF (NT.LE.0) THEN
+        N    = 1 
+        X(N) = 0.0 
+        Y(N) = 0.0
+        RETURN 
+      END IF 
+!-----
+      STEP =  -(4.0/3.0) * ATAN(1.0)
+      DO I=1,7
+        XC(I) = -1.0 * RADIUS * COS(STEP*(I-1))  !SMB/RWL 6/11/99
+        YC(I) = -1.0 * RADIUS * SIN(STEP*(I-1)) 
+      END DO
+!---- 
+
+      IF (PRESENT(SELECT)) THEN
+         CHOICE = SELECT
+      ELSE
+         CHOICE = Z'7FFFFFFF'
+      ENDIF
+
+      DO I=1,6                                 ! all sides 
+      DO J=1,NT                                ! all tubes 
+       IF (BTEST(CHOICE,J-1)) THEN             ! make this tube?
+         N = N + 1                               ! increment tube count 
+         EPS  = FLOAT(J-1) / FLOAT(NT)           ! 
+         X(N) = XC(I) + (XC(I+1)-XC(I)) * EPS    ! 
+         Y(N) = YC(I) + (YC(I+1)-YC(I)) * EPS   
+       ENDIF
+      END DO
+      END DO
+
+      RETURN 
+      END SUBROUTINE GCA_MAKE_HEXAGON 
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+
+      SUBROUTINE GCA_MAKE_RING(RADIUS,NT,N,X,Y,dtheta) 
+
+      IMPLICIT NONE 
+
+!---- arguments 
+      REAL     RADIUS    ! distance of outer ring of tubes from centre of camera
+      INTEGER  NT        ! number of tubes per ring      
+      INTEGER  N         ! total number of tubes so far
+      REAL     dtheta    ! offset of radius to centre of first tube in ring from
+                         ! x axis in u nits of pixel diameters
+      REAL     X(*),Y(*) ! tube position 
+
+!---- 
+      REAL     STEP          ! 2*pi/no. of tubes in ring
+      INTEGER  J
+
+      STEP = 8.0 * ATAN(1.0) / NT
+
+      DO J=0,NT-1             ! all tubes
+       N = N + 1              ! increment tube count
+       X(N) = -1.0 * RADIUS * (COS(STEP*(J+dtheta)))
+       Y(N) = RADIUS * (SIN(STEP*(J+dtheta)))  ! SMB 2/11/99
+      END DO
+
+      END SUBROUTINE GCA_MAKE_RING
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+    SUBROUTINE GCA_PIXEL(IT,IERR)  
+
+!-------------------------------------------------------------------------------
+!     High light selcted pixel, display pixel number 
+!-------------------------------------------------------------------------------
+
+!Modified:
+
+!	12/03/02 GHS
+!		Add code to display CFD mask state of selected pixel.
+!               Only display if pixel is disabled in CFD.
+      use ghi
+      use camac_def
+
+      INTEGER, INTENT(OUT) :: IERR 
+
+      INTEGER,INTENT(IN)  :: IT 
+      CHARACTER(LEN=132)  :: TEXT 
+
+      REAL                :: RG32    ! Cernlib 
+      REAL X1,X2,Y1,Y2,DX,DY,DZ,X,Y,R  
+      
+      INTEGER   :: COLOR(2) 
+      INTEGER I 
+      logical :: cfd_state
+
+      IF(.NOT.ASSOCIATED(GCA_CAMERA)) RETURN      ! camera defined? 
+      IF (GCA_CAMERA(IT)%SELECTED.LE.0) THEN      ! pixel selected? 
+        IERR = 1 
+        RETURN 
+      ELSE 
+        IERR = 0  
+      	DX = GCA_CAMERA(IT)%HSPACE
+      	DY = GCA_CAMERA(IT)%VSPACE
+      	DZ = GCA_CAMERA(IT)%HEIGHT 
+
+
+!******************************************************************************
+!  If selected pixel is CFD Disabled put out a note to that effect
+!******************************************************************************
+      	if(GCA_CAMERA(IT)%SELECTED.le.n_cfd_discriminators*n_cfd_chan)then
+	  call gca_getcfdmask(GCA_CAMERA(IT)%SELECTED,cfd_state)
+!Note: CFD is disabled if ther mask bit is set(.true.)
+      	  if(cfd_state)then
+       		X1 = GCA_CAMERA(IT)%WDEG-9*DX  
+      		X2 = GCA_CAMERA(IT)%WDEG-1*DX  
+      		Y1 = GCA_CAMERA(IT)%WDEG-3*DY  
+      		Y2 = GCA_CAMERA(IT)%WDEG-2*DY  
+
+		COLOR(1) = 1000+GHI_red
+      		COLOR(2) = 1000+GHI_FRONT 
+		text="CFD Disabled"
+      		CALL IGPAVE(X1,X2,Y1,Y2,DZ,& 
+         	1002,& 
+         	1001,& 
+         	"TR") 
+
+      		call igtext(& 
+          	  MAX(X1,X2)-4*DX, & 
+          	  MIN(Y1,Y2)+0.5*(DY-DZ), &   
+           	  TEXT,DZ,0.0,'C')   !'C' means text is centered.          
+          endif
+	endif
+!******************************************************************************
+
+!******************************************************************************
+!   Display which pixel was selected
+!******************************************************************************
+
+      	X1 = GCA_CAMERA(IT)%WDEG-4*DX  
+      	X2 = GCA_CAMERA(IT)%WDEG-1*DX  
+      	Y1 = GCA_CAMERA(IT)%WDEG-2*DY  
+      	Y2 = GCA_CAMERA(IT)%WDEG-1*DY  
+
+       	COLOR(1) = 1000+GHI_YELLOW 
+       	COLOR(2) = 1000+GHI_FRONT 
+       	CALL IGPAVE(X1,X2,Y1,Y2,DZ,& 
+         FLOAT(COLOR(1)),& 
+         FLOAT(COLOR(2)),& 
+         "TR") 
+
+       CALL IGPAVE(X1,X2,Y1,Y2,DZ,& 
+         1005,& 
+         1001,& 
+        "TR") 
+
+      	WRITE(TEXT,'(I4)') GCA_CAMERA(IT)%SELECTED 
+      	call igtext(& 
+          MAX(X1,X2)-1.5*DX, & 
+          MIN(Y1,Y2)+0.5*(DY-DZ), &   
+          TEXT,DZ,0.0,'C')             
+
+        X = GCA_CAMERA(IT)%XDEG(GCA_CAMERA(IT)%SELECTED)
+        Y = GCA_CAMERA(IT)%YDEG(GCA_CAMERA(IT)%SELECTED)  
+        R = GCA_CAMERA(IT)%RDEG(GCA_CAMERA(IT)%SELECTED)*0.5   
+        CALL ISFACI(5)                                    ! set color    
+        CALL ISFAIS(1)                                    ! fill areas
+        CALL IGARC(X,Y,0.0,R,0.0,0.0)                     ! plot arc 
+        CALL ISFACI(1)                                    ! color foreground  
+        CALL ISFAIS(0)                                    ! hollow areas
+      endif
+      return
+    END SUBROUTINE GCA_PIXEL 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+    SUBROUTINE GCA_PLOT_CFD   
+!-------------------------------------------------------------------------------
+!     re-plot pixel tags for those pixels whose CFD are disabled
+!-------------------------------------------------------------------------------
+      use camac_def
+
+      IMPLICIT NONE 
+
+      INTEGER :: IC
+      INTEGER :: I1,I2,pmt_number
+      logical,dimension(max_cfd_channels) :: channel_disabled  
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      IF(.NOT.ASSOCIATED(GCA_CAMERA)) RETURN      ! camera defined? 
+      IC = GCA_CAMERA_10M                        ! set camera to 10m 
+!---- Tag pixels with DISABLED CFDs
+
+!Find all disabled cfd channels and tag them.
+      do pmt_number=1,max_cfd_channels
+				!If mask_set is true, the bit is set and the
+			        !channel is disabled.
+	call gca_getcfdmask(pmt_number,channel_disabled(pmt_number))
+      enddo
+      I1=1
+      I2=max_cfd_channels
+      CALL GCA_PLOT_PMT(IC,I1,I2,&
+        	channel_disabled,&           !   
+                'CS')                        ! C=CFD tag, S=Superimose 
+      RETURN 
+    END SUBROUTINE GCA_PLOT_CFD  
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+ 
+
+
+      SUBROUTINE GCA_PLOT_PMT(IC,I1,I2,USE,CHOPT)   
+!-------------------------------------------------------------------------------
+!     plot pixels outline 
+!-------------------------------------------------------------------------------
+      IMPLICIT NONE 
+
+!---- arguments 
+      INTEGER, INTENT(IN)         :: IC      ! camera index 
+      INTEGER, INTENT(IN)         :: I1,I2   ! range of tubes to display 
+      LOGICAL, INTENT(IN)         :: USE(:)  ! true means display tube  
+      CHARACTER(LEN=*),INTENT(IN) :: CHOPT   ! options:
+					     ! S:superimpose
+					     ! X:Calc field of view
+                                             ! H:Magenta hexagon outline
+                                             ! C:CFD disable TAG(x over CFD) 
+
+!---- pointers 
+      REAL,POINTER :: XD (:),YD(:)     ! x/y position of tubes 
+      REAL,POINTER :: RD (:)           ! radius 
+
+!---- misc 
+      REAL       :: WX1,WX2,WY1,WY2
+      REAL       :: WXY              ! field of view half angle [deg] 
+      INTEGER       I
+      INTEGER       K,K1,K2 
+      REAL          HSCALE          ! hexagon scale factor  
+      REAL          TEXTHEIGHT
+      REAL          XPL(7),YPL(7)   ! poly-line points 
+      CHARACTER(32) CHVAL           ! tube number
+
+!-------------------------------------------------------------------------------
+!     setup pointers to arrays for convenience 
+!-------------------------------------------------------------------------------
+      IF (ASSOCIATED(GCA_CAMERA(IC)%XDEG)) THEN   ! camera exists yet? 
+        XD =>  GCA_CAMERA(IC)%XDEG(I1:I2)         ! set pointers ... 
+        YD =>  GCA_CAMERA(IC)%YDEG(I1:I2)
+        RD =>  GCA_CAMERA(IC)%RDEG(I1:I2) 
+      ELSE                                        ! no camera defined yet!
+        RETURN                                    ! give up 
+      ENDIF         
+!-------------------------------------------------------------------------------
+!     set size of coordinate system      
+!-------------------------------------------------------------------------------
+      IF (INDEX(CHOPT,'S').GE.1) THEN               ! superimpose 
+        ! ... superimpose .... means do nothing 
+      ELSE IF (INDEX(CHOPT,'X').GE.1) THEN          ! calculate field of view 
+        WX1 = -MINVAL(XD,1,USE)  
+        WX2 =  MAXVAL(XD,1,USE)  
+        WY1 = -MINVAL(YD,1,USE) 
+        WY2 =  MAXVAL(YD,1,USE)
+        WXY =  MAX(WX1,WX2,WY1,WY2)
+        WXY =  0.1*(INT(10*WXY)+3)                  ! add a 0.3 deg boundary 
+        CALL HPLFRA(-WXY,WXY,-WXY,WXY,CHOPT)        ! coordinate system
+        TEXTHEIGHT = 0.3*MAXVAL(RD)
+        GCA_CAMERA(IC)%WDEG   =  WXY                ! half width of field  
+        GCA_CAMERA(IC)%VSPACE = (WXY/25)            ! vertical line height 
+        GCA_CAMERA(IC)%HSPACE = (WXY/25)            ! column width 
+        GCA_CAMERA(IC)%HEIGHT = (WXY/25)*0.7        ! text height 
+      ELSE 
+        WXY =  1.6                                  ! default        
+        CALL HPLFRA(-WXY,WXY,-WXY,WXY,CHOPT)        ! coordinate system
+      ENDIF 
+!-------------------------------------------------------------------------------
+!     draw hexagonal tube shape 
+!-------------------------------------------------------------------------------
+      IF (INDEX(CHOPT,'H').GE.1) THEN                      ! use hex-shape?
+        CALL ISPLCI(6)                                     ! magenta line
+!        CALL IGSET('LWID',10.0)                            ! line width
+        CALL IGSET('LWID',5.0)
+        DO I=I1,I2                                         ! all tubes 
+          IF (USE(I)) THEN                                 ! status ok?
+            HSCALE = RD(I)/COSD(15.0)
+            DO K=0,6 
+              XPL(K+1) = XD(I) + HSCALE*COSD(30.0+60.0*K)
+              YPL(K+1) = YD(I) + HSCALE*SIND(30.0+60.0*K)
+            ENDDO 
+            CALL IPL(7,XPL,YPL)
+          ELSE                                               ! tube is ko
+            CALL IPM(1,XD(I),YD(I))                          ! plot cross
+          END IF           
+        ENDDO
+        CALL IGSET('LWID',1.0)                             ! line width
+!-------------------------------------------------------------------------------
+
+!-------------------------------------------------------------------------------
+!     draw CFD Disabled tag
+!-------------------------------------------------------------------------------
+      elseIF (INDEX(CHOPT,'C').GE.1) THEN                      ! plot CFD tag?
+        CALL ISPLCI(1)                                     ! Black line
+        CALL IGSET('LWID',2.0)
+        TEXTHEIGHT = 0.6*MAXVAL(RD)
+        DO I=I1,I2                                         ! all tubes 
+          IF (USE(I)) THEN                                 ! status ok?
+	      HSCALE = RD(I)
+
+              CALL IGTEXT(XD(I),(YD(I)-(TEXTHEIGHT/2.0)), &      ! x,y
+          	& "CFD", &                                       ! text 
+	  	& TEXTHEIGHT,0.0, &                              ! size, angle 
+          	& "C")                                           ! center
+              HSCALE = RD(I)
+              XPL(1) = XD(I) + HSCALE*COSD(45.)  !set up coords of CROSS
+              XPL(2) = XD(I) - HSCALE*COSD(45.)  !set up coords of CROSS
+              yPL(1) = YD(I) + HSCALE*COSD(45.)  !set up coords of CROSS
+              yPL(2) = YD(I) - HSCALE*COSD(45.)  !set up coords of CROSS
+              CALL IPL(2,XPL,YPL)
+
+              XPL(1) = XD(I) + HSCALE*COSD(45.)  !set up coords of CROSS
+              XPL(2) = XD(I) - HSCALE*COSD(45.)  !set up coords of CROSS
+              yPL(1) = YD(I) - HSCALE*COSD(45.)  !set up coords of CROSS
+              yPL(2) = YD(I) + HSCALE*COSD(45.)  !set up coords of CROSS
+              CALL IPL(2,XPL,YPL)
+          END IF           
+        ENDDO
+        CALL IGSET('LWID',1.0)                             ! line width
+
+!-------------------------------------------------------------------------------
+!     draw round tubes 
+!-------------------------------------------------------------------------------
+      ELSE  
+        CALL ISPLCI(1)             ! black line                                                    ! default 
+        CALL ISLN(1)                                         ! solid line 
+!       CALL IGSET('PASS',3.0)                               ! bold type
+!       CALL IGSET('FAIS',0.0)                               ! hollow shape 
+!       CALL IGSET('PLCI',1.0)                               ! black lines
+!       CALL IGSET('LTYP',1.0)                               ! draw border
+        CALL IGSET('LWID',0.5)                               ! line width
+        CALL IGSET('BORD',1.0)                               ! draw border
+        DO I=I1,I2                                           ! all tubes 
+          IF (USE(I)) THEN                                   ! status ok?
+            CALL IGARC(XD(I),YD(I),RD(I),RD(I),0.0,0.)       ! plot arc
+!            IF (GIM_CTRL%PED_VARS.OR.GMO_CTRL%SC_RATE) THEN  ! write tube numbers
+!              CALL IZITOC(I,CHVAL)                      ! convert to char
+!              CALL IGTEXT(XD(I),(YD(I)-(TEXTHEIGHT/2.0)),CHVAL,TEXTHEIGHT,0.0,"C")  ! plot tube no. 
+!            ENDIF
+          ELSE                                               ! tube is ko
+            CALL IPM(1,XD(I),YD(I))                          ! plot cross
+          END IF           
+        ENDDO
+        CALL IGSET('LWID',1.0)                             ! line width
+      ENDIF 
+
+      RETURN 
+
+      END SUBROUTINE GCA_PLOT_PMT
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GCA_PLOT_SIGNAL(XD,YD,RD,SIG,USE,CO,SR,PA,CHOPT)   
+!-------------------------------------------------------------------------------
+!     
+!-------------------------------------------------------------------------------
+!     S = superimpose (use last range  SR(2))
+!     H = half circle only 
+!     B = bottom 
+!     T = top 
+!     I = integer 
+!-------------------------------------------------------------------------------
+
+      IMPLICIT NONE 
+
+!---- arguments 
+      REAL          XD (:),YD(:)       ! x/y position of tubes 
+      REAL          RD (:)             ! radius 
+      REAL          SIG(:)             ! signal 
+      INTEGER       USE(:)             ! true means display tube  
+      INTEGER       CO (:)             ! color 
+      REAL          SR(2)              ! minimum/maximum signal range 
+      REAL          PA (:)             ! parameters values 
+      CHARACTER(*)  CHOPT              ! options 
+
+!---- misc 
+      REAL          SMIN, SMAX         ! last scale 
+      CHARACTER(32) CHVAL              ! real/integer value 
+      INTEGER       I,I1,I2 
+      REAL          HEIGHT             ! text height, world coordinates 
+      REAL          RADIUS 
+      REAL          EPSILON
+      REAL          ANGLE  
+      REAL          SHIFT
+      REAL          TEXTHEIGHT
+
+!-------------------------------------------------------------------------------
+!     
+!-------------------------------------------------------------------------------
+      IF (INDEX(CHOPT,'H').GE.1) THEN                       ! hlaf circle?
+        ANGLE = 180.0 
+      ELSE
+        ANGLE = 0.0 
+      END IF 
+
+      IF (INDEX(CHOPT,'S').LE.0) THEN                       ! new scale? 
+        IF (SR(1).NE.SR(2)) THEN                            ! valid?   
+          SMIN = SR(1) 
+          SMAX = SR(2)
+        ELSE                                                ! invalid
+!!!       CALL GR$ERROR(SRN,'Invalid scale.')               ! complain 
+          RETURN                                            ! refuse to go on 
+        END IF 
+      END IF 
+!-------------------------------------------------------------------------------
+!     
+!-------------------------------------------------------------------------------
+
+      TEXTHEIGHT = 0.3*MAXVAL(RD)
+
+      I1 = MAX(LBOUND(XD,1),LBOUND(SIG,1),LBOUND(CO,1)) 
+      I2 = MIN(UBOUND(XD,1),UBOUND(SIG,1),UBOUND(CO,1))
+      DO I=I1,I2                                            ! all tubes 
+        IF (USE(I).EQ.0) THEN                               ! status ok?
+          CALL ISFACI(CO(I))                                ! set color    
+          EPSILON =  (SIG(I)-SMIN) / (SMAX-SMIN)            ! scale 
+          RADIUS  = RD(I) * SQRT(ABS(EPSILON)) 
+          IF (EPSILON.GT.0.0) THEN 
+            CALL ISFAIS(1)                                  ! fill pos. areas
+          ELSE 
+            CALL ISFAIS(0)                                  ! neg. stays empty 
+          ENDIF 
+          CALL IGARC(XD(I),YD(I),0.0,RADIUS,0.0,ANGLE)      ! plot arc 
+        ELSE                                                ! tube is ko
+          CALL ISFACI(1)                                    ! color foreground  
+          CALL IPM(1,XD(I),YD(I))                           ! plot cross
+        END IF           
+      ENDDO
+      CALL ISFACI(1)                                        ! color foreground  
+      CALL ISFAIS(0)                                        ! hollow areas
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      IF (INDEX(CHOPT,'T').GE.1) THEN                       ! text at top?
+        SHIFT = +0.6 
+      ELSE                                                  ! text at bottom 
+        SHIFT = -0.9
+      ENDIF
+
+      IF (PA(1).GT.0.0) THEN                                ! text height?
+        HEIGHT = PA(1)*MAXVAL(RD)                           ! * max tube size 
+      ELSE                                                  ! use default 
+        HEIGHT =   0.3*MAXVAL(RD)                           ! * max tube size
+      ENDIF 
+
+      IF (INDEX(CHOPT,'I').GE.1) THEN 
+        DO I=I1,I2                                           ! all tubes 
+        IF (USE(I).EQ.0) THEN                                ! status ok?
+          CALL IZITOC(NINT(SIG(I)),CHVAL)                    ! convert to char
+          CALL IGTEXT( & 
+            XD(I),YD(I)+SHIFT*RD(I), &                       ! x,y
+            CHVAL, &                                         ! text 
+            HEIGHT, 0.0, &                                   ! size, angle 
+            'C')                                             ! centered 
+          END IF           
+        ENDDO
+      ELSE                                                   ! we want the tube no. 
+        DO I=I1,I2                                           ! all tubes 
+          IF (USE(I).EQ.0) THEN                              ! status ok?
+!            IF (GIM_CTRL%PED_VARS.OR.GMO_CTRL%SC_RATE) THEN  ! write tube numbers
+!              CALL IZITOC(I,CHVAL)                      ! convert to char
+!              CALL IGTEXT(XD(I),(YD(I)-(TEXTHEIGHT/2.0)),CHVAL,TEXTHEIGHT,0.0,"C")  ! plot tube no. 
+!            ENDIF
+          ENDIF
+        ENDDO
+      ENDIF
+
+      RETURN 
+      END SUBROUTINE GCA_PLOT_SIGNAL 
+!******************************************************************************
+
+  SUBROUTINE GCA_GETCFDMASK(pmt_number,state)
+!******************************************************************************
+!       Get value of bit in mask word corresponding to CHANNEL. STATE indicates
+!       if set or cleared(true/fasle).
+!******************************************************************************
+	use camac_def
+	IMPLICIT NONE
+
+	integer :: pmt_number
+	logical :: state
+	integer :: slot
+	integer :: bit
+	character(len=4) :: pmtnumber
+        CHARACTER(len=80) :: MSG        ! error message 
+        INTEGER ::      jERR            ! return code         
+
+        CHARACTER(*), PARAMETER :: SRN = "GCA_GETCFDMASK"
+
+	slot=((pmt_number-1)/16 +1)	    !round down here. slots start at 1.
+	bit= pmt_number-16*(slot-1)-1 !bit 0 is first bit of mask.
+	
+!TEST the bit in the word.
+	state=btest(cfd(slot)%mask,bit)
+	return
+  END SUBROUTINE GCA_GETCFDMASK
+!******************************************************************************
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+     END MODULE GCA

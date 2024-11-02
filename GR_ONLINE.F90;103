@@ -1,0 +1,415 @@
+
+      MODULE GON
+
+!-------------------------------------------------------------------------------
+!     Online data acqusition specific code 
+!-------------------------------------------------------------------------------
+!Modified:
+!	31/08/02 GHS
+!		Add check to gon_action to make sure producer thread not 
+!		running before accepting any run number changes. Add new 
+!		gon_ctrl%pr10_active flag to do this. 
+!		Set this flag to duplicate  gpr10_ctrl%run_status. Do it this 
+!		way becuase of order of
+!               compiling problems for use gon, use gpr10
+
+      USE GOS 
+      USE GDF 
+
+      IMPLICIT NONE 
+
+      PRIVATE 
+
+      PUBLIC GON_ACTION		! KUIP action routine 
+      PUBLIC GON_UTC_DATE	! Used by GPR10_SYNCH
+      PUBLIC GON_UTC_IDATE	! Used by gon_set_system_time
+      PUBLIC GON_WRITE          ! write run information 
+      
+      LOGICAL, PUBLIC :: GON_READ_NEW ! read new run info from file 
+
+!-------------------------------------------------------------------------------
+!   ontrol flags to communicate with other threads
+!-------------------------------------------------------------------------------
+	type, public :: gon_ctrl_t
+	   logical :: pr10_active    !Flag that gpr10 thread active
+	end type gon_ctrl_t
+        type(gon_ctrl_t), public:: gon_ctrl= gon_ctrl_t(.false.)
+!-------------------------------------------------------------------------------
+!-------------------------------------------------------------------------------
+      CONTAINS 
+!-------------------------------------------------------------------------------
+
+      SUBROUTINE GON_ACTION 
+!-------------------------------------------------------------------------------
+!     execute KUIP commands 
+!-------------------------------------------------------------------------------
+!Modified:
+!	31/08/02 GHS
+!		Add checks to make sure analysis thread or 
+!          	producer threads are not running before accepting any run 
+!		number changes.
+
+      INTEGER      I, j
+      INTEGER      N, NCHAR, m 
+
+      CHARACTER(len=80) :: MSG        ! error message
+      CHARACTER(*),PARAMETER   :: SRN='GON_ACTION'
+      CHARACTER(32) CMD                               ! bottom level command 
+      CHARACTER(80) TEXT 
+      CHARACTER(len=6) :: runnumber_id	
+      INTEGER       NPAR                              ! number of parameters 
+      INTEGER       DUMMY 
+      INTEGER       LEN 
+      INTEGER       IERR 
+!-------------------------------------------------------------------------------
+!     update run parameters  
+!-------------------------------------------------------------------------------
+      CALL KUPATL(CMD,NPAR)                          ! get command 
+
+!      IF (CMD.EQ.'SKY') THEN 
+!        CALL KUGETI(I)
+!        GDF_RUN%SKY_QUALITY = I 
+!        GDF_RUN%VALID   = .TRUE. 
+!        GDF_RUN%NEW     = .TRUE. 
+!        CALL GOS_UTC(GDF_RUN%UTC,IERR) 
+!        CALL GON_WRITE(GDF_RUN,IERR) 
+!      ELSE IF (CMD.EQ.'OBSERVER') THEN             ! enter observer names?
+!        CALL KUGETS(TEXT,LEN)                      ! get first obs name 
+!        GDF_RUN%OBSERVER = TEXT(1:LEN)             ! set first observer 
+!        DO I=2,NPAR                                ! get all othe observers 
+!          CALL KUGETS(TEXT,LEN)                    ! get next name 
+!          GDF_RUN%OBSERVER = &                     ! append new observer
+!          TRIM(GDF_RUN%OBSERVER)//","//TEXT(1:LEN)  
+!        ENDDO           
+!        CALL GOS_UTC(GDF_RUN%UTC,IERR) 
+!        GDF_RUN%VALID   = .TRUE. 
+!        GDF_RUN%NEW     = .TRUE. 
+!        CALL GON_WRITE(GDF_RUN,IERR) 
+!      ELSE IF (CMD.EQ.'COMMENT') THEN 
+!        GDF_RUN%CLEN = NCHAR     
+!        CALL GOS_UTC(GDF_RUN%UTC,IERR) 
+!        GDF_RUN%VALID   = .TRUE. 
+!        GDF_RUN%NEW     = .TRUE. 
+!        CALL GON_WRITE(GDF_RUN,IERR) 
+      IF (CMD.EQ.'RUN_INFORMATION') THEN              ! read run info file?
+        CALL GON_READ(GDF_RUN,IERR) 
+        GON_READ_NEW = .TRUE. 
+      ELSE IF (CMD.EQ.'RUN_NUMBER') THEN                     ! set run number? 
+        if(gon_ctrl%pr10_active)then
+   MSG  = 'Run Number change not allowed when Analysis or Producer threads &
+	&active.'
+          IERR = GOS_ERROR(SRN,MSG,1)
+          return
+        endif
+ 	IF (NPAR.GE.1) THEN                                  ! number given?
+          CALL KUGETI(GDF_RUN%RUN)                           ! set new value
+        ELSE                                                 ! no number given
+          GDF_RUN%RUN = GDF_RUN%RUN + 1                      ! increment +1
+        ENDIF                                                ! we have a number
+        CALL GOS_UTC(GDF_RUN%UTC,IERR)                       ! tag with UTC time
+        GDF_RUN%VALID   = .TRUE.                             ! data is valid
+        GDF_RUN%NEW     = .TRUE.                             ! write to fz-file 
+        CALL GON_WRITE(GDF_RUN,IERR)                         ! write to run file
+
+	write(runnumber_id,'(i6)')GDF_RUN%RUN
+        text="New run number is "//runnumber_id
+        IERR = GOS_ERROR(SRN,TEXT,0)
+      ELSE
+        IERR = GOS_ERROR(SRN,'Unknown command: '//CMD,1)
+      END IF
+	
+      RETURN 
+      END SUBROUTINE GON_ACTION 
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GON_READ(RUN,IERR)   
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      TYPE(GDF_RUN_T)         :: RUN 
+      INTEGER                 :: IERR 
+      CHARACTER(*),PARAMETER  :: SRN='GON_READ' 
+
+      OPEN(30,&
+        IOSTAT =  IERR, &
+        FILE   = "DIR$DATA:GDF_RUN.DAT", &
+        STATUS = "OLD", &  
+        ACTION = "READ", & 
+        FORM   = "UNFORMATTED")
+      IF (IERR.NE.0) THEN 
+        IERR = GOS_ERROR(SRN,'Failed to access run information.',1)
+        RETURN
+      ENDIF
+ 
+      READ(30) RUN 
+      CLOSE(30) 
+
+      RETURN 
+
+      END SUBROUTINE GON_READ 
+
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+      SUBROUTINE GON_TIME 
+
+!-------------------------------------------------------------------------------
+!     set start stop time for next run 
+!-------------------------------------------------------------------------------
+!
+!     Carefull! There are many implicit assumptions made here. 
+!
+!     - the off-source run follows the on-source run, 
+!     - that the computer UTC time is correct
+!     - .... 
+!-------------------------------------------------------------------------------
+      CHARACTER(*),PARAMETER  :: SRN='GON_TIME' 
+
+!---- Kuip related 
+      CHARACTER CMD*32,ANSWER*32 
+      INTEGER   NPAR,LEN 
+      REAL*4    SID_MIN_LENGTH 
+      REAL*4    SID_MIN_CYCLE  
+      REAL*4    UTC_SEC_WAIT    
+      REAL*4    UTC_SEC_UT1     
+
+!---- conversions   
+      REAL*8     SECDAY
+      REAL*8     MINDAY
+      REAL*8     RADDEG                                     
+      REAL*8     SIDUTC                                         ! sid --> UTC
+      REAL*8     MINRAD                                         ! min --> rad 
+      PARAMETER (SECDAY =  1D0 / 86.4D3)                        ! sec --> day 
+      PARAMETER (MINDAY = 60D0 / 86.4D3)                        ! min --> day 
+
+!---- telescope geodetic position 
+      CHARACTER    ID*10,NAME*40                    ! Slalib ID and name 
+      REAL*8       WEST,NORTH,HEIGHT                ! geodetic position
+
+!---- time 
+      REAL*8 UTC_NOW 
+      REAL*8 UTC_WAIT
+      REAL*8 UTC_CYCLE              ! UTC time between runs    [mjd]
+      REAL*8 UTC_LENGTH             ! UTC length of run        [mjd]
+      REAL*8 UTC_NEXT               ! UTC next siderial minute [mjd]
+      REAL*8 SID_CYCLE              ! [rad]
+      REAL*8 SID_LENGTH             ! [rad]         
+      REAL*8 STL_NOW                ! local siderial time 
+      REAL*8 UT1_NOW                ! UT1 time 
+      REAL*8 UTC(3) 
+      REAL*8 UT1(2) 
+      REAL*8 STL(2) 
+      REAL*8 SIDEREAL
+      CHARACTER*9 DS(3)
+      CHARACTER*8 TS(3)
+	
+!----
+      REAL*8      SLA_GMST           ! Slalib routine 
+      REAL*8      TWOPI 
+      REAL*8      DELTA 
+      CHARACTER*9 DATE(3)
+      CHARACTER*8 TIME(3)
+      INTEGER     I 
+
+      TYPE(GDF_RUN_T) :: NEW       ! new values run record 
+      INTEGER IERR 
+!-------------------------------------------------------------------------------
+!     
+!-------------------------------------------------------------------------------
+      TWOPI = 8D0 * ATAN(1D0) 
+
+!---- Kuip input
+      CALL KUPATL(CMD,NPAR) 
+      CALL KUGETR(SID_MIN_LENGTH)                        ! sid run length  [min]
+      CALL KUGETR(SID_MIN_CYCLE )                        ! sid cycle time  [min]
+      CALL KUGETR(UTC_SEC_WAIT  )                        ! wait till start [sec]
+
+!---- determine telescope position 
+      CALL SLA_OBS(9,ID,NAME,WEST,NORTH,HEIGHT)
+
+!---- get UTC,UT1,local siderial time (STL)
+      CALL GOS_UTC(UTC_NOW,IERR)                         ! get  UTC [mjd]
+      UT1_NOW = UTC_NOW ! +- ?????                         calc UT1 [mjd] 
+      STL_NOW = SLA_GMST(UT1_NOW) - WEST                 ! calc STL [rad]
+
+!---- establish various conversions 
+      UT1(1) = MOD(UT1_NOW,1D0)                          ! midnight       
+      UT1(2) = MOD(UT1_NOW,1D0)+60D0*MINDAY              ! + 1 hour
+      DELTA  = SLA_GMST(UT1(2))-SLA_GMST(UT1(1))+TWOPI   ! differ. in siderial 
+      SIDUTC = (UT1(2)-UT1(1)) / MOD(DELTA,TWOPI)        ! sid --> UTC 
+      MINRAD = TWOPI / DFLOAT(24*60)                     ! min --> rad 
+      RADDEG =  45D0 /  ATAN(1D0)                        ! rad --> deg 
+
+!---- convert into UTC time 
+      SID_LENGTH = SID_MIN_LENGTH * MINDAY * TWOPI       !                 [rad]
+      SID_CYCLE  = SID_MIN_CYCLE  * MINDAY * TWOPI       !                 [rad]
+      UTC_WAIT   = UTC_SEC_WAIT   * SECDAY               ! UTC wait time   [mjd]
+      UTC_CYCLE  = SID_CYCLE      * SIDUTC               ! UTC cycle time  [mjd]
+      UTC_LENGTH = SID_LENGTH     * SIDUTC               ! UTC run length  [mjd]
+
+!---- next siderial minute 
+      STL(1) = SLA_GMST(UT1_NOW) - WEST                  ! STL now         [rad]
+      UT1(2) = UT1_NOW + UTC_WAIT                        ! UT1 now + wait  [mjd]
+      STL(2) = SLA_GMST(UT1(2)) - WEST + MINRAD          ! STL     + 1min  [rad]
+      STL(2) = STL(2) - MOD(STL(2),MINRAD)               ! STL full minute [rad]
+      DELTA  = STL(2) - STL(1)                           ! STL from now    [rad]
+      UTC_NEXT = UTC_NOW + DELTA * SIDUTC                ! UTC sid minute  [mjd]
+!-------------------------------------------------------------------------------
+!     read info of previous run, update with new values 
+!-------------------------------------------------------------------------------
+      IF (CMD.EQ.'NOW')  THEN 
+        GDF_RUN%UTC_START  = UTC_NOW  + UTC_WAIT
+        GDF_RUN%UTC_END    = UTC_NOW  + UTC_WAIT + UTC_LENGTH  
+      ELSE IF (CMD.EQ.'ON')  THEN 
+        GDF_RUN%UTC_START  = UTC_NEXT 
+        GDF_RUN%UTC_END    = UTC_NEXT + UTC_LENGTH  
+      ELSE IF (CMD.EQ.'OFF')  THEN 
+        GDF_RUN%UTC_START  = GDF_RUN%UTC_END   + UTC_CYCLE     ! end + cycle 
+        GDF_RUN%UTC_END    = GDF_RUN%UTC_START + UTC_LENGTH    ! start + length
+      ELSE
+        IERR = GOS_ERROR(SRN,"Can not handle command: "//CMD,1)
+        RETURN 
+      ENDIF
+
+      GDF_RUN%UTC        = UTC_NOW 
+      GDF_RUN%SID_LENGTH = SID_MIN_LENGTH   
+      GDF_RUN%SID_CYCLE  = SID_MIN_CYCLE 
+      GDF_RUN%SID_ACTUAL = 0.0 
+      GDF_RUN%NEW        = .TRUE.                               ! alert writer
+      CALL GON_WRITE(GDF_RUN,IERR) 
+
+      RETURN 
+      END SUBROUTINE GON_TIME 
+
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+      SUBROUTINE GON_UTC_DATE(UTC,DATE,TIME,IERR)
+!-------------------------------------------------------------------------------
+!     Converts UTC time date into character strings for DATE and TIME  
+!-------------------------------------------------------------------------------
+
+!	Modified:
+
+!	13/11/97 GHS,SMB
+!		Add fraction of seconds to TIME string out to 2 places(10's of
+!		milliseconds.
+
+!---- arguments 
+      REAL*8      UTC     ! UTC time [mjd]
+      CHARACTER*9 DATE    ! eg '12-AUG-94' 
+!13/11/97GHS.smb  was:CHARACTER*9 TIME    ! eg 'HH:MM:SS' 
+      CHARACTER*11 TIME    ! eg 'HH:MM:SS.ss' 
+      INTEGER     IERR
+!---- 
+
+      INTEGER I 
+      REAL*8       :: FRACTION                          ! fraction of day
+      INTEGER      :: YEAR,MONTH,DAY                    ! guess 
+      INTEGER      :: HMSN(4),ia                        ! hours,minute,second,ns 
+      CHARACTER(1) :: SIGN                              ! see SLALIB manual 
+      CHARACTER(3) :: MNEMO(12)  = &                    ! guess 
+         (/ 'JAN','FEB','MAR','APR','MAY','JUN', & 
+            'JUL','AUG','SEP','OCT','NOV','DEC' /)    
+      CHARACTER(*),PARAMETER :: SRN='GON_UTC_DATE' ! subroutine name 
+	real :: milli_10,secs
+!----
+      CALL SLA_DJCL(UTC,YEAR,MONTH,DAY,FRACTION,IERR)     ! decode UTC 
+      IF (IERR.NE.0) THEN                                 ! problems?
+        IERR = GOS_ERROR(SRN,'Invalid UTC time.',IERR)    ! complain 
+        RETURN                                            ! give up 
+      END IF
+
+      CALL SLA_DD2TF(9,FRACTION,SIGN,HMSN)                ! decode FRACTION 
+ 
+	milli_10=10**7	!Number of nsec in 10 millisec sec.
+	ia=hmsn(4)/milli_10
+	secs=hmsn(3)+ia*.01
+
+      WRITE(DATE,1000)  DAY,MNEMO(MONTH),MOD(YEAR,100)    ! set DATE 
+
+!13/11/97GHS.smb was: WRITE(TIME,2000) (HMSN(I),I=1,3)        ! set TIME 
+      WRITE(TIME,2000) (HMSN(I),I=1,2),secs                 ! set TIME 
+
+ 1000 FORMAT(I2,'-',A3,'-',I2)
+
+!13/11/97GHS.smb was: 2000 FORMAT(I2,':',I2,':',I2) 
+ 2000 FORMAT(I2,':',I2,':',f5.2) 
+
+      RETURN 
+      END SUBROUTINE GON_UTC_DATE
+
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+      SUBROUTINE GON_UTC_IDATE(UTC,IDATE,IERR)
+!-------------------------------------------------------------------------------
+!     Converts UTC time date into array of integers  
+!-------------------------------------------------------------------------------
+!---- arguments 
+      REAL*8      UTC       ! UTC time [mjd]
+      INTEGER     IDATE(7)  ! year, month, day, hour, minute, second, ns
+      INTEGER     IERR
+!---- 
+      REAL*8      FRACTION                           ! fraction of day
+      CHARACTER(*),PARAMETER :: SRN='GON_UTC_IDATE'  ! subroutine name 
+      CHARACTER*1 SIGN                               ! see SLALIB manual 
+!----
+      CALL GOS_LOCK(GOS_MUTEX_SLALIB,IERR)                 ! request SLALIB 
+      CALL SLA_DJCL(UTC, &                                 ! decode UTC 
+        IDATE(1),IDATE(2),IDATE(3),FRACTION,IERR)          ! to get IDATE(1:3)
+      IF (IERR.NE.0) THEN                                  ! problems?
+        IERR = GOS_ERROR(SRN,'Invalid UTC time.',IERR)     ! complain 
+      ELSE 
+        CALL SLA_DD2TF(9,FRACTION,SIGN,IDATE(4:7))         ! decode FRACTION 
+      END IF
+      CALL GOS_UNLOCK(GOS_MUTEX_SLALIB,IERR)               ! release SLALIB 
+
+
+      RETURN 
+      END SUBROUTINE GON_UTC_IDATE
+
+
+!++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+      SUBROUTINE GON_WRITE(RUN,IERR)   
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      TYPE(GDF_RUN_T)         :: RUN 
+      INTEGER                 :: IERR 
+
+      CHARACTER(*), PARAMETER :: SRN='GON_WRITE'
+
+      OPEN(30,&
+        IOSTAT = IERR,&
+        FILE   = "DIR$DATA:GDF_RUN.DAT",&
+        ACTION = "WRITE",&
+        STATUS = "UNKNOWN",&
+        FORM   = "UNFORMATTED")
+      IF (IERR.NE.0) THEN 
+        IERR = GOS_ERROR(SRN,'Failed to write run information.',1)
+        RETURN
+      ENDIF
+      WRITE(30) RUN 
+      CLOSE(30) 
+
+      RETURN 
+      END SUBROUTINE GON_WRITE 
+
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      END MODULE GON 
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+      SUBROUTINE GET_GDF(RUN)   
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      USE GDF 
+
+      IMPLICIT NONE 
+      
+      TYPE(GDF_RUN_T) :: RUN 
+
+      RUN = GDF_RUN
+
+      END SUBROUTINE GET_GDF
+

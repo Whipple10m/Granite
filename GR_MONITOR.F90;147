@@ -1,0 +1,259 @@
+
+      MODULE GMO 
+!-------------------------------------------------------------------------------
+!     Monitor data quality 
+!-------------------------------------------------------------------------------
+!Modified:
+
+!	14/03/02 GHS
+!		Add flag GMO_CTRL%UPDATE to control wether display updates
+!		are enabled. set.cleared  only by the Freeze and Continue 
+!		buttons.  Used only by the GDI_UPDATE routine. Initalized in
+!        	GDI_START.
+
+
+
+      USE GIM 
+      USE GBM  
+      USE GCA 
+      USE GDF 
+      USE GOS 
+      USE GHB 
+      USE GHI 
+
+      PRIVATE 
+
+!-------------------------------------------------------------------------------
+!     public subroutines 
+!-------------------------------------------------------------------------------
+      PUBLIC GMO_RATE 
+      PUBLIC GMO_SHOW_SRATE 
+      PUBLIC GMO_MAX 
+
+!-------------------------------------------------------------------------------
+!     histogram numbers 
+!-------------------------------------------------------------------------------
+      INTEGER, PARAMETER :: GMO_IDH_BASE = 200
+      TYPE :: GMO_IDH_T
+        INTEGER EPM            ! events per minute 
+        INTEGER EPS            ! events per second 
+        INTEGER DEPTH          ! buffer manager depth 
+        INTEGER LOC1           ! max1 location
+        INTEGER LOC2           ! max2 location
+        INTEGER LOC3           ! max3 location
+      END TYPE 
+      TYPE(GMO_IDH_T) GMO_IDH   
+!-------------------------------------------------------------------------------
+!     internal control flags 
+!-------------------------------------------------------------------------------
+      TYPE, PUBLIC :: GMO_CTRL_T 
+        LOGICAL RATE          ! display event rate plots 
+        LOGICAL SC_RATE       ! display single channel rates 
+        logical update        ! Enable dupdates of display
+      END TYPE 
+      TYPE(GMO_CTRL_T), PUBLIC :: GMO_CTRL   
+
+!-------------------------------------------------------------------------------
+      CONTAINS 
+!-------------------------------------------------------------------------------
+
+      SUBROUTINE GMO_RATE(CHOPT) 
+!-------------------------------------------------------------------------------
+!     monitor event rate per
+!-------------------------------------------------------------------------------
+
+
+      IMPLICIT NONE 
+
+      CHARACTER :: CHOPT 
+      CHARACTER(LEN=*),PARAMETER :: SRN="GMO_RATE"
+      INTEGER, PARAMETER         :: IT  = GIM_IMAGE_10M    ! telescope index 
+      CHARACTER(LEN=80)  :: TEXT 
+
+      INTEGER IX,K
+      REAL    X,Y,Y1,Y2
+      INTEGER IERR
+      REAL    C(90),E(90),XU(30),YU(30),DXU(30),DYU(30)    ! content, error 
+      INTEGER*2 TEMP_ADC(GDF_EV10%NADC)                    ! Used to calculate max1 and max2 
+      INTEGER LOC1(1),LOC2(1),LOC3(1)
+      INTEGER N 
+
+      IF (CHOPT.EQ."F") THEN 
+        IF (GDF_EV10%NEW.AND.GDF_RUN%VALID) THEN           ! new event?
+!          X = 1440. * (GDF_EV10%UTC-GDF_RUN%UTC_START)     ! run time [min]
+          X = gdf_ev10%elapsed_sec/60.		     ! run time [min]
+          Y = GBM_STATUS%DEPTH     
+          CALL HFILL(GMO_IDH%DEPTH,X,Y,1.0) 
+          CALL HFILL(GMO_IDH%EPM,X,0.0,1.0/60.)            ! event/minute [Hz] 
+          CALL HXI(GMO_IDH%EPM,X,IX)                       ! get bin number 
+          IF (IX.GT.1) THEN                                ! > 1 minutes? 
+            Y = HI(GMO_IDH%EPM,IX)                         ! get content 
+            IF (Y.LT.1.5/60.) THEN                         ! new minute? 
+              CALL HUNPAK(GMO_IDH%EPS,C,' ',0)             ! unpack content 
+              CALL HUNPKE(GMO_IDH%EPS,E,' ',0)             ! unpack errors
+              C = EOSHIFT(C,SHIFT=60,BOUNDARY=0.0)         ! shift -60 sec
+              E = EOSHIFT(E,SHIFT=60,BOUNDARY=0.0)         ! shift 
+              CALL HPAK (GMO_IDH%EPS,C)                    ! store
+              CALL HPAKE(GMO_IDH%EPS,E)                    ! store 
+            ENDIF                                          ! 
+          ENDIF                                            ! 
+          TEMP_ADC = GIM_IMAGE(IT)%ADC_SIG(1:GDF_EV10%NADC)  ! copy ADC values
+          LOC1 = MAXLOC(TEMP_ADC)                          ! find location of max1
+          TEMP_ADC(LOC1(1)) = 0                            ! zero max1
+          LOC2 = MAXLOC(TEMP_ADC)                          ! find location of max2
+          TEMP_ADC(LOC2(1)) = 0                            ! zero max2
+          LOC3 = MAXLOC(TEMP_ADC)                          ! find location of max3
+          CALL HFILL(GMO_IDH%LOC1,REAL(LOC1(1)),0.0,1.0)
+          CALL HFILL(GMO_IDH%LOC2,REAL(LOC2(1)),0.0,1.0)
+          CALL HFILL(GMO_IDH%LOC3,REAL(LOC3(1)),0.0,1.0)
+          X = MOD(X,1.0)*60.0                              ! sec into minute
+          CALL HFILL(GMO_IDH%EPS,X,0.0,1.0)                ! event/second [Hz]
+        ENDIF 
+      ELSE IF (CHOPT.EQ."I") THEN 
+        GMO_IDH%EPM   = GMO_IDH_BASE + 1
+        GMO_IDH%EPS   = GMO_IDH_BASE + 2 
+        GMO_IDH%DEPTH = GMO_IDH_BASE + 3
+        GMO_IDH%LOC1  = GMO_IDH_BASE + 4 
+        GMO_IDH%LOC2  = GMO_IDH_BASE + 5 
+        GMO_IDH%LOC3  = GMO_IDH_BASE + 6
+        IF  (HEXIST(GMO_IDH%EPM)) CALL HDELET(GMO_IDH%EPM) 
+        IF  (HEXIST(GMO_IDH%EPS)) CALL HDELET(GMO_IDH%EPS) 
+        IF  (HEXIST(GMO_IDH%LOC1)) CALL HDELET(GMO_IDH%LOC1) 
+        IF  (HEXIST(GMO_IDH%LOC2)) CALL HDELET(GMO_IDH%LOC2) 
+        IF  (HEXIST(GMO_IDH%LOC3)) CALL HDELET(GMO_IDH%LOC3) 
+        CALL HBOOK1(GMO_IDH%EPM,"Minute event rate",30,  0.,30.,0.) 
+        CALL HBOOK1(GMO_IDH%EPS,"Second event rate",90,-30.,60.,0.) 
+        CALL HBOOK1(GMO_IDH%LOC1,"Max Tube Locations",GDF_EV10%NADC,0.,REAL(GDF_EV10%NADC),0.) 
+        CALL HBOOK1(GMO_IDH%LOC2,"Max Tube Locations",GDF_EV10%NADC,0.,REAL(GDF_EV10%NADC),0.) 
+        CALL HBOOK1(GMO_IDH%LOC3,"Max Tube Locations",GDF_EV10%NADC,0.,REAL(GDF_EV10%NADC),0.) 
+        IF  (HEXIST(GMO_IDH%DEPTH)) CALL HDELET(GMO_IDH%DEPTH) 
+        Y1 = 0.0 
+        Y2 = GBM_EV10_MAX*1.2
+        CALL HBPROF(GMO_IDH%DEPTH,"Data buffer depth",30,0.,30.,Y1,Y2,'S') 
+      ELSE IF (CHOPT.EQ."D") THEN                     ! request to display?
+        IF (GMO_CTRL%RATE) THEN                       ! display in ON?
+          IF (.NOT.HEXIST(GMO_IDH%EPM)) RETURN        ! histogram exists?
+          CALL HNOENT(GMO_IDH%EPM,N)                  ! number of entries?
+          IF (N.LE.0) RETURN                          ! no data to display 
+          XU = (/(0.5+K,K=0,29)/)
+          CALL HUNPAK(GMO_IDH%EPM,YU,' ',0)           ! unpack contents
+          DXU = 0
+          DYU = SQRT(YU*60.)/60.
+          CALL HPLZON(1,3,1,' ') 
+          CALL HPLOT(GMO_IDH%DEPTH,'PE',' ',0)  
+          CALL HPLOT(GMO_IDH%EPS  ,'PE',' ',0)  
+          CALL HPLOT(GMO_IDH%EPM  ,'P',' ',0)
+          CALL HPLERR(XU,YU,DXU,DYU,30,' ',2,0.55)  
+          CALL HPLZON(1,1,1,' ') 
+        ENDIF 
+      ELSE IF (CHOPT.EQ."S") THEN                     ! request for subplot?
+          IF (.NOT.HEXIST(GMO_IDH%EPM)) RETURN  
+          CALL HNOENT(GMO_IDH%EPM,N) 
+          IF (N.LE.0) RETURN                          ! no data to display 
+          XU = (/(0.5+K,K=0,29)/)
+          CALL HUNPAK(GMO_IDH%EPM,YU,' ',0)           ! unpack contents
+          DXU = 0
+          DYU = SQRT(YU*60.)/60.
+          CALL HPLOPT('NSQR', 1)
+          CALL HPLSET('YMGU',1.00)
+          CALL HPLSET('YMGL',2.00)
+          CALL HPLZON(2,3,5,'S') 
+          CALL HPLOT(GMO_IDH%EPM  ,'P',' ',0)  
+          CALL HPLERR(XU,YU,DXU,DYU,30,' ',2,0.55)  
+          CALL HPLSET('DMOD',1.)
+          CALL HPLSET('HCOL',2.)
+          CALL HPLOT(GMO_IDH%LOC1,' ',' ',0)
+          CALL HPLSET('HCOL',3.)
+          CALL HPLOT(GMO_IDH%LOC2,'S',' ',0)
+          CALL HPLSET('HCOL',4.)
+          CALL HPLOT(GMO_IDH%LOC3,'S',' ',0)
+          CALL HPLSET('HCOL',1.)
+          CALL HPLZON(1,1,1,' ') 
+      ELSE
+        IERR = GOS_ERROR(SRN,"Unknown option "//CHOPT,1) 
+      ENDIF 
+
+      END SUBROUTINE GMO_RATE 
+
+!*******************************************************************************
+
+      SUBROUTINE GMO_MAX(X1,X2,Y1,Y2)  
+!-------------------------------------------------------------------------------
+!     return size (x1,x2,y1,y2) and y(x) of MAXi plot 
+!-------------------------------------------------------------------------------
+      REAL,INTENT(OUT)   :: X1,X2,Y1,Y2         ! appoximate size 
+      CHARACTER(LEN=132) :: TEXT 
+      INTEGER            :: NX,NY,NWT,LOC                  ! see HGIVE 
+      REAL               :: A,B,C 
+
+      CALL HGIVE(GMO_IDH%LOC1,TEXT,NX,X1,X2,NY,Y1,Y2,NWT,LOC) 
+      Y1 = 0 
+      A  = HMAX(GMO_IDH%LOC1) 
+      B  = HMAX(GMO_IDH%LOC2) 
+      C  = HMAX(GMO_IDH%LOC3) 
+      Y2 = MAX(A,B,C) / 0.9 
+
+      END SUBROUTINE GMO_MAX 
+
+!*******************************************************************************
+
+      SUBROUTINE GMO_SHOW_SRATE(IT)  
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+
+      IMPLICIT NONE 
+
+      INTEGER IT
+      INTEGER IERR 
+      CHARACTER(LEN=32) TEXT
+      REAL, ALLOCATABLE :: TEMP(:)
+      INTEGER N 
+      REAL TPF                              ! avg guestimated time per frame 
+      INTEGER, POINTER  :: COLOR(:)
+
+      IF (.NOT.GMO_CTRL%SC_RATE) RETURN 
+      IF (.NOT.GDF_FR10%VALID)   RETURN 
+      IF (GDF_FR10%FRAME.LE.0)   RETURN 
+
+!
+!     Note : 
+!       The code is specific to the 10m only. 
+!       Singles rates aren't normalized yet. 
+!
+!      TPF = (GDF_FR10%UTC-GDF_RUN%UTC_START)/GDF_FR10%FRAME  ! [days] 
+!      TPF = TPF * 86400.                                     ! [sec] 
+
+!     this code above gives the wrong rate because  GDF_FR10%FRAME   
+!     is now equivalent to the event number because the pedestal event
+!     is considered to be "just another event", hence we end up with 
+!     the time between events rather than the time between pedestal
+!     events and get far too high a singles rate displayed. Sorry, but 
+!     as this is for display purposes I am just going to say that the time
+!     per frame is approx. 1 second and stop dividing by TPF.  SMB 28/9/98
+
+
+      N = GDF_FR10%NSCA                                ! any scaler values?
+      IF (N.LE.0) RETURN                               ! abort if none 
+      ALLOCATE(TEMP(N), COLOR(N))                      ! temporary memory 
+      WHERE (GDF_FR10%SCALS(1:N).GE.0)   ! JQ changed gt to ge ! sign bit off 
+!        TEMP = GDF_FR10%SCALS/TPF                      ! calc rate [Hz]?
+         TEMP = GDF_FR10%SCALS
+      ELSEWHERE                                        ! sign bit on 
+!        TEMP = (ABS(GDF_FR10%SCALS)+2**15)/TPF         ! add value of bit 2**15 
+         TEMP = (ABS(GDF_FR10%SCALS)+2**15)
+      ENDWHERE  
+      COLOR = GHI_GREEN
+      CALL GCA_DISPLAY(IT,TEMP,'X',COLOR,IERR)         ! show values 
+                                                       
+      DEALLOCATE(TEMP, COLOR)                          ! deallocate 
+
+      WRITE(TEXT,'(A,2I7)') & 
+        'run/frame',GDF_RUN%RUN,GDF_FR10%FRAME 
+      CALL IGTEXT(& 
+        -GCA_CAMERA(IT)%WDEG+0.2, &   ! x low left corner
+        -GCA_CAMERA(IT)%WDEG+0.2, &   ! y 
+        TEXT,0.06,0.0,'L')            ! 
+
+      END SUBROUTINE GMO_SHOW_SRATE 
+      END MODULE GMO 

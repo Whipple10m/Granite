@@ -1,0 +1,436 @@
+MODULE CAMAC_DEF
+
+   USE GHY                                    ! HYTEC interface 
+ 
+! The EXT_REG_CODEs are numbers that have in an encoded 
+! format the values of  the branch,crate,slot and subaddress of a desired 
+! camac command. They are  constructed by a call to the HYTEC CDREG subroutine.
+! The EXT_REG_CODE numbers are used whenever the computer(not the LP which are
+! encoded in a different fashion) want to do a CAMAC command directly ( for 
+! example by use of the CSSA routine).
+
+!	Modified:
+
+!	19/5/99,21/8/99 GHS
+!       	Added stuff for crate 2 for 490 pixel upgrade. All new stuff 
+!		will test for lp2 online to activate.
+!		Also do some cleanup. Explixcitly put MICH_OSC offline(It
+!		doesn't exist anymore but we should keep the example of its use.
+
+
+	IMPLICIT NONE
+	
+	integer*4 :: sa
+
+	type camac_module
+		integer*4 :: crate		!Crate of module
+		integer*4 :: slot		!Slot in crate
+		integer*4,dimension(0:15) :: ext_reg_code  !External register
+						! codes
+						!Covers all sub-addresses
+		logical :: online		!Flag to indicate module is 
+						!avaiable for use.
+		character(len=20) ::dev_type	!Acronime for module(like adc
+						!or malu etc)
+ 		integer :: start                !Address of first word in LP
+						!event for this module.
+                                
+		integer :: end	                !Address of last word in LP
+						!event for this module.
+        end type camac_module
+
+
+	type pst_module
+		integer*4 :: crate		!Crate of module
+		integer*4 :: slot		!Slot in crate
+		integer*4,dimension(0:15) :: ext_reg_code  !External register
+						! codes
+						!Covers all sub-addresses
+		logical :: online		!Flag to indicate module is 
+						!avaiable for use.
+		character(len=20) ::dev_type	!Acronime for module(like adc
+						!or malu etc)
+ 		integer :: start                !Address of first word in LP
+						!event for this module.
+                                
+		integer :: end	                !Address of last word in LP
+						!event for this module.
+                integer :: mult                 !trigger pattern multiplicity.
+        end type pst_module
+
+	
+	type i2_data_pointer			!This is for 16 bit reads
+		integer*2,dimension(:),pointer :: ptr
+	end type i2_data_pointer
+
+	type i4_data_pointer			!this is for 24 bit reads
+		integer*4,dimension(:),pointer :: ptr
+	end type i4_data_pointer
+
+        type lp_data
+                integer*2 :: inst(0:8191)       !Array to hold the "Compiled"
+                                                !instructions for the LP program
+                integer :: last                 !Last address in the above
+                                                !array used in the LP program  
+						!For use in the listing
+						!generation
+   		integer :: tag_count            !counts number of tags in
+						! LP programs
+		integer :: tag(20)		!array to store tags. Probably
+						! no more then 2 really needed
+						!except for LP4(pst,2 for each)
+                integer :: slot_used(0:8191)    !Array to hold the slot a 
+						!particular lp instruction 
+						!accesses. Used for error
+						!printout when the LP's hang.
+		character(len=20) :: device(0:8191)	!Device type used
+
+		integer :: event_length		!amount of data in an event
+		integer*4 :: read_add		!Curent value of List Processer
+						!Read Memory Address Register
+		integer*4 :: start		!Start of data in lp memory
+		integer*2 :: inst_reg		!instruction register value.
+		integer :: length 		!Length of data in lp buffers
+		integer,dimension(2) :: buf_size !Length of allocated buffer
+		integer,dimension(2) :: buf_add	!Address of next word to read
+						!from allocated data buffer.
+		logical :: buf_done		!Flag that there are no more
+						!complete events in a buffer
+		logical :: buf_empty		!No partial data in old buffer.
+		integer*4 :: event		!Event number of present event
+						!being pointed to.
+						
+	end type lp_data
+
+	type cfd_module
+		integer*4 :: crate		!Crate of module
+		integer*4 :: slot		!Slot in crate
+		integer*4,dimension(0:15) :: ext_reg_code  !External register
+						! codes
+						!Covers all sub-addresses
+		logical :: online		!Flag to indicate module is 
+						!avaiable for use.
+		integer*4 :: mask  		!Disable mask for this cfd
+						!Note: A bit SET in the mask 
+			          		!disables that channel.
+		integer*4,dimension(0:15) :: threshold    !CFD threshold values
+						!to load.
+		integer*4,dimension(0:15) :: act_threshold    !CFD threshold 
+						!value as read out after last
+						!load.
+    end type cfd_module
+
+ 	integer*4, parameter :: branch=1	!Only one branch possible
+
+!ADC parameters
+	integer :: nadc_chan=12		!Number of channels in an adc.
+!331 version:
+	integer, parameter :: n_lecroy_scaler=3		! AMB this was 4
+	integer, parameter :: n_phillips_scaler=8	
+	integer, parameter :: n_live_chan=4
+	integer, parameter :: npst=13
+	integer, parameter :: nadc1=15
+	integer, parameter :: nadc3=13
+!490 version addition:
+	integer, parameter :: nadc2=13
+
+	real*8 :: live_osc=10. * 10**6		!10 Mhz.
+
+
+!Define sub addresses
+	integer*4, parameter :: a0=0,  a1=1, a2=2, a3=3,  a4=4,  a5=5,  a6=6
+	integer*4, parameter :: a7=7,  a8=8, a9=9,a10=10,a11=11,a12=12,a13=13
+	integer*4, parameter :: a14=14,a15=15
+
+!Define Camac function codes
+	integer*4,parameter ::  f0=0, f1=1,  f2=2,  f4=4,  f8=8,  f9=9, f10=10
+	integer*4,parameter ::f11=11,f12=12,f13=13,f16=16,f17=17,f18=18,f19=19
+	integer*4,parameter ::f23=23,f24=24,f25=25,f26=26,f27=27
+
+!Crate 1 definitions:
+    !Data buffer pointers
+	type (i2_data_pointer),dimension(2) :: buf1
+    !list_proc_1
+	type(camac_module),target ::   &
+  list_proc_1=camac_module(1,23,(/(0,sa=0,15)/),.true.,"LIST PROC",0,0)!slot 23
+	type(lp_data) lp1
+   !SOB1
+	type(camac_module) ::   & 
+         	sob1=camac_module(1,22,(/(0,sa=0,15)/),.true.,"SOB",0,0)!slot 22
+   !MALU1
+	type(camac_module) ::   &
+   	    malu1=camac_module(1,21,(/(0,sa=0,15)/),.true.,"MALU",0,0) !slot 21
+    !ADC1
+	type(camac_module), dimension(nadc1),target ::  &
+	adc1=(/camac_module(1,1,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 1
+	      &camac_module(1,2,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 2
+	      &camac_module(1,3,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 3
+	      &camac_module(1,4,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 4
+	      &camac_module(1,5,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 5
+	      &camac_module(1,6,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 6
+	      &camac_module(1,7,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 7
+	      &camac_module(1,8,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 8
+	      &camac_module(1,9,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 9
+	      &camac_module(1,10,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 10
+	      &camac_module(1,11,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 11
+	      &camac_module(1,12,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 12
+	      &camac_module(1,13,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 13
+	      &camac_module(1,14,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 14
+	      &camac_module(1,15,(/(0,sa=0,15)/),.true.,"ADC",0,0)/)   !slot 15
+     							!Slots 16-20 empty
+!***********************************************
+!Crate 2 definitions:
+!***********************************************
+    !Data buffer pointers
+	type (i2_data_pointer),dimension(2) :: buf2
+    !list_proc_2
+
+!***********************************************
+!	disable lp2 for now
+!***********************************************
+	type(camac_module),target ::   &
+!  list_proc_2=camac_module(2,23,(/(0,sa=0,15)/),.false.,"LIST PROC",0,0)!slot 23
+  list_proc_2=camac_module(2,23,(/(0,sa=0,15)/),.true.,"LIST PROC",0,0)!slot 23
+
+	type(lp_data) lp2
+   !SOB2
+	type(camac_module) ::   & 
+         	sob2=camac_module(2,22,(/(0,sa=0,15)/),.true.,"SOB",0,0)!slot 22
+   !MALU2
+	type(camac_module) ::   &
+   	    malu2=camac_module(2,21,(/(0,sa=0,15)/),.true.,"MALU",0,0) !slot 21
+    !ADC2
+	type(camac_module), dimension(nadc2),target ::  &
+	adc2=(/camac_module(2,1,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 1
+	      &camac_module(2,2,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 2
+	      &camac_module(2,3,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 3
+	      &camac_module(2,4,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 4
+	      &camac_module(2,5,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 5
+	      &camac_module(2,6,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 6
+	      &camac_module(2,7,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 7
+	      &camac_module(2,8,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 8
+	      &camac_module(2,9,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 9
+	      &camac_module(2,10,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 10
+	      &camac_module(2,11,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 11
+	      &camac_module(2,12,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 12
+	      &camac_module(2,13,(/(0,sa=0,15)/),.true.,"ADC",0,0)/)   !slot 13
+     							!Slots 14-20 empty
+
+!Crate 3 definitions:
+    !Data buffer pointers
+	type (i2_data_pointer),dimension(2) :: buf3
+    !list_proc_3
+	type(camac_module),target ::   &
+  list_proc_3=camac_module(3,23,(/(0,sa=0,15)/),.true.,"LIST PROC",0,0)!slot 23
+	type(lp_data) lp3
+    !SOB3
+	type(camac_module) ::   & 
+               sob3=camac_module(3,22,(/(0,sa=0,15)/),.true.,"SOB",0,0)!slot 22
+   !MALU3
+	type(camac_module) ::   & 
+            malu3=camac_module(3,21,(/(0,sa=0,15)/),.true.,"MALU",0,0) !slot 21
+    !ADC3
+	type(camac_module), dimension(nadc3),target ::  &
+	adc3=(/camac_module(3,1,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 1
+     	      &camac_module(3,2,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 2
+	      &camac_module(3,3,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 3
+	      &camac_module(3,4,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 4
+	      &camac_module(3,5,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 5
+	      &camac_module(3,6,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 6
+	      &camac_module(3,7,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 7
+	      &camac_module(3,8,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 8
+	      &camac_module(3,9,(/(0,sa=0,15)/),.true.,"ADC",0,0),&	!slot 9
+	      &camac_module(3,10,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 10
+	      &camac_module(3,11,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 11
+	      &camac_module(3,12,(/(0,sa=0,15)/),.true.,"ADC",0,0),&   !slot 12
+	      &camac_module(3,13,(/(0,sa=0,15)/),.true.,"ADC",0,0)/)   !slot 13
+    !RA:Encoder readout Register(lecroy 2341)
+	type(camac_module),target ::   &
+          ra=camac_module(3,16,(/(0,sa=0,15)/),.true.,"RA encoder",0,0)!slot 16
+    !DEC:Encoder readout Register(lecroy 2341)
+	type(camac_module),target ::   &
+        dec=camac_module(3,17,(/(0,sa=0,15)/),.true.,"DEC encoder",0,0)!slot 17
+
+    !GPS HYTEC
+	type(camac_module),target :: hytec_gps = &
+       &camac_module(3,19,(/(0,sa=0,15)/),.true.,"HYTEC_GPS clock",0,0)!slot 19
+ 							           !and slot 18
+
+    !Event Trigger Register(lecroy 2341)
+	type(camac_module),target ::   &
+trigger=camac_module(3,20,(/(0,sa=0,15)/),.true.,"TRIGGER register",0,0)!slot 20
+
+!Crate 4 definitions:
+    !Data buffer pointers  (crate 4 needs 24 bit reads)
+	type (i4_data_pointer),dimension(2) :: buf4
+    !list_proc_4
+	type(camac_module),target ::  &
+list_proc_4=camac_module(4,23,(/(0,sa=0,15)/),.true.,"LIST PROC",0,0)  !slot 23
+	type(lp_data) lp4
+    !SOB4
+	type(camac_module) ::   & 
+               sob4=camac_module(4,22,(/(0,sa=0,15)/),.true.,"SOB",0,0)!slot 22
+    !MALU4
+	type(camac_module) ::   & 
+	     malu4=camac_module(4,21,(/(0,sa=0,15)/),.true.,"MALU",0,0)!slot 21
+
+    !GRS2(Wisconsin tru time GPS interface--24 bit readout)
+	type(camac_module),target ::   &
+     grs2=camac_module(4,20,(/(0,sa=0,15)/),.true.,"GRS2_GPS clock",0,0)!slot 20
+    !LIVE TIME SCALER:lecroy 2251-cascaded to 48 bits (channels 0-1,2-3)
+	type(camac_module),target ::   & 
+    live_time=camac_module(4,19,(/(0,sa=0,15)/),.true.,"LIVE_TIME",0,0)!slot 19
+
+    !MICH_OSC: Michigan oscillater.
+	type(camac_module),target ::   &
+       mich_osc=camac_module(4,19,(/(0,sa=0,15)/),.false.,"MICH_OSC",0,0)!slot 19
+    !PST TRIGGER PROCESSOR
+	type(pst_module),target,dimension(npst) ::  pst= &
+    &(/pst_module(4,1,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 1
+      &pst_module(4,2,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 2
+      &pst_module(4,3,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 3
+      &pst_module(4,4,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 4
+      &pst_module(4,5,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 5
+      &pst_module(4,6,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 6
+      &pst_module(4,7,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 7
+      &pst_module(4,8,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 8
+      &pst_module(4,9,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 9
+      &pst_module(4,10,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 10
+      &pst_module(4,11,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 11
+      &pst_module(4,12,(/(0,sa=0,15)/),.true.,"PST",0,0,2),&!slot 12
+      &pst_module(4,13,(/(0,sa=0,15)/),.true.,"PST",0,0,2)/)!slot 13
+     
+
+!Crate 5 definitions:
+    !Data buffer pointers
+	type (i2_data_pointer),dimension(2) :: buf5
+    !list_proc_5
+	type(camac_module),target ::  &
+list_proc_5=camac_module(5,23,(/(0,sa=0,15)/),.true.,"LIST PROC",0,0)!slot 23
+	type(lp_data) lp5
+
+    !SOB5
+	type(camac_module) ::   & 
+             sob5=camac_module(5,22,(/(0,sa=0,15)/),.true.,"SOB",0,0)!slot 22
+    !MALU5
+	type(camac_module) ::   & 
+             malu5=camac_module(5,21,(/(0,sa=0,15)/),.true.,"MALU",0,0)!slot 21
+    !LSCAL
+	type(camac_module),target,dimension(n_lecroy_scaler) ::  &
+  lscal=(/camac_module(5,1,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&!slot 1
+         &camac_module(5,2,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&!slot 2
+         &camac_module(5,3,(/(0,sa=0,15)/),.true.,"SCALER",0,0)/)!slot 3
+!amb     &camac_module(5,4,(/(0,sa=0,15)/),.true.,"SCALER",0,0)/)!slot 4
+    !PSCAL
+	type(camac_module),target,dimension(n_phillips_scaler) ::  &
+pscal=(/camac_module(5,4,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&  !slot 4 !amb
+       &camac_module(5,5,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&  !slot 5
+       &camac_module(5,6,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&  !slot 6 
+       &camac_module(5,7,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&  !slot 7
+       &camac_module(5,8,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&  !slot 8
+       &camac_module(5,9,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&  !slot 9
+       &camac_module(5,10,(/(0,sa=0,15)/),.true.,"SCALER",0,0),&!slot 10
+       &camac_module(5,11,(/(0,sa=0,15)/),.true.,"SCALER",0,0)/)!slot 11
+
+!Crate 6 : Constant fraction disc crate.
+	integer,parameter :: n_cfd_discriminators=21
+	integer,parameter :: n_cfd_chan=16
+	integer*4,parameter :: cfd_width_dead=0*2**4+5 ! 05 hex - SMB 980219 
+
+! CFD programmable o/p gate width ranges from 10 nsec to 40 nsec in 1.8 nsec
+! steps (see acquisition/mfc/notes.txt on vhegro) e.g. cfd_width_dead =
+! 0*2**4+5 = 05 hex => 10 nsec width + 5 dead time, 
+! 5*2**4+5 = 55 hex => 10 nsec + 5*1.8 nsec + 5 dead time => 19 nsec width 
+! 2*2**4+5 = 25 hex => 10 nsec + 2*1.8 nsec + 5 dead time => 14 nsec width
+
+	integer,parameter :: CFD_mask=2**16-1 !All channels disabled
+!Michael's notres give 1.7 mv per count in the threshold. For test purposes
+!try 25*91,7)=42.5 mv.
+
+
+!Below sets mask to 0: All channels enabled.
+	type(cfd_module),target,dimension(n_cfd_discriminators) :: &
+   cfd=(/cfd_module(6,1,(/(0,sa=0,15)/),.true.,        0,(/(60,sa=0,15)/), &
+						&	(/(0,sa=0,15)/)),&!sl 1
+        &cfd_module(6,2,(/(0,sa=0,15)/),.true.,        0,(/(60,sa=0,15)/), &
+						&	(/(0,sa=0,15)/)),&!sl 2
+        &cfd_module(6,3, (/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), &
+						&	(/(0,sa=0,15)/)),&!sl 3
+        &cfd_module(6,4, (/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), &
+						&	(/(0,sa=0,15)/)),&!sl 4
+        &cfd_module(6,5, (/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), &
+						&	(/(0,sa=0,15)/)),&!sl 5
+        &cfd_module(6,6, (/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), &
+			 			&	(/(0,sa=0,15)/)),&!sl 6
+        &cfd_module(6,7, (/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), &
+						&	(/(0,sa=0,15)/)),&!sl 7
+        &cfd_module(6,8, (/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&	(/(0,sa=0,15)/)),&!sl 8
+	&cfd_module(6,9, (/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&       (/(0,sa=0,15)/)),&!sl 9
+	&cfd_module(6,10,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 10
+	&cfd_module(6,11,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 11
+	&cfd_module(6,12,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 12
+	&cfd_module(6,13,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 13
+	&cfd_module(6,14,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 14
+	&cfd_module(6,15,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 15
+	&cfd_module(6,16,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 16
+	&cfd_module(6,17,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 17
+	&cfd_module(6,18,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/), & 
+						&      (/(0,sa=0,15)/)),&!sl 18
+	&cfd_module(6,19,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/),  &
+						&      (/(0,sa=0,15)/)),&!sl 19
+	&cfd_module(6,20,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/),  &
+						&      (/(0,sa=0,15)/)),&!sl 20
+	&cfd_module(6,21,(/(0,sa=0,15)/),.true.,       0,(/(60,sa=0,15)/),  &
+						&      (/(0,sa=0,15)/))/)!sl 21
+
+
+!	Declare the Hytec Camac callable functions
+	integer*4,external :: fcssa,fcsubr,fcsubc,  &
+	   fbklam,fubkla,fubkmo,tcfubr,tcssa,  &
+	   tcsubr,fcsga,tcfga,wcfubl,waitef,zcssa,       &
+	   fcclnk,zcsubr,zcsubc
+
+!	Declare various variables used as arguments for Hytec routines.
+	integer*4 :: status		!Returned function status
+	integer*4 :: q,w_data_i4
+ 
+	integer*2 :: w_data_i2,r_data_i2
+	integer*4 :: da_crate_powered_off=134644018 !status returned when a 
+						!crate is powered off
+	integer :: da_next_event	!Event number for next event
+	integer :: da_last_event	!Event number for present(or last) event
+
+	integer*4 :: lp1_min_buffer_size=500	!Original Minimum size of 
+						!buffer to use. Start small to
+						!get some events at the very
+						!start of run. Then increase
+						!depending event rate up to
+						!lp1_max_buffer_size
+	integer*4,parameter :: lp1_max_buffer_size=4000	!Maximum value of 
+						!minimum size of buffer to use
+						!(I know thats confusing).
+	real,parameter :: seconds_in_day=(24.*3600.)
+	integer*4,parameter :: mem_mask=2**18-1 !777777	octal
+	integer*4,parameter :: instruction_mask=2**12-1 !7777 octal (12 bits)
+	integer :: lp_buf_new,lp_buf_old
+
+	real :: time_to_wait
+	real,parameter::nitrogen_time=.2	!During a Nitrogen run this is
+						!the amount of time we wait
+	!used to be .1   SMB			!between stopping the lp(close
+	!used to be .01 SMB 16/2/99		! event gate) and reading out 
+						!the buffers before we start up
+						!again
+	logical :: restart_run=.false.
+	integer :: live_sec_old
+   END MODULE CAMAC_DEF

@@ -1,0 +1,758 @@
+!DOC gr_analysis.tex 
+!
+!  \section{Analysis thread} 
+!
+!  The analysis thread gets data from a shared buffer memory.
+!  The data is processed and the if desired written to disk. 
+!  The module is broken into subroutines which are called at 
+!  different stages during the analysis of a run.
+!  \begin{description}
+!  \item[GAN_START:} is the first routine called when the thread is created.
+!                    Any initilisation tasks that do not require a information 
+!                    from the data stream can be preformed here. 
+!                    11/09/01 GHS: Moved call to GBN_FLUSH out side of the if
+!                    statment so that it is called at the end of all runs, 
+!                    even those not writing out data like the TEST runs.
+!  \item[GAN_FIRST:} is called after the first event is available. 
+!                    At this point the information that specific to the 
+!                    run, such as the number of telescopes and the number 
+!                    of photomultiplier channles is available. 
+!                    Any remaining initsation should be carried out. 
+!  \item[GAN_NEXT:}  This routine is called for each event. 
+!  \item[GAN_EXIT:}  This routine is called after the last event.
+!                    At ths points any files should be closed. 
+!                    This is the last routine before the thread exits. 
+!  \end{description} 
+!
+!END 
+
+!Modifed:
+! 	31/08/02 GHS
+!		Add a gan_ctrl%anal_start flag to indicate if an analysis 
+!               thread is running. Then change the gan_action to not start a
+!  		new thread if one in progress. Also change gan_start to set and
+!		reset this flag at the start and the end of the analysis
+!		thread.                         
+
+
+      MODULE GAN                                     
+
+      USE GDI            ! display 
+      USE GIM            ! calibrated image 
+      use gpr10
+      USE GNI            ! N2 calibration 
+      USE GMO 
+      USE GTR 
+      USE GCA            ! camera 
+      USE GBM
+      USE GDF 
+      USE GOS            ! operating system 
+      USE GPA            ! image cleaning  parametrization
+      USE GTE            ! telescopes 
+      USE GHI            ! HIGZ graphics 
+
+!-------------------------------------------------------------------------------
+!     data analysis thread 
+!-------------------------------------------------------------------------------
+      IMPLICIT NONE 
+
+      PRIVATE 
+!-------------------------------------------------------------------------------
+!     public subroutines 
+!-------------------------------------------------------------------------------
+      PUBLIC  GAN_ACTION   ! KUIP action routine 
+      PUBLIC  GAN_START    ! thread entry point
+!-------------------------------------------------------------------------------
+!     control flags to communicate with other threads
+!-------------------------------------------------------------------------------
+! 31/08/02 GHS: Add a anal_start flag to indicate if an analysis thread is
+! running.
+      TYPE, PUBLIC :: GAN_CTRL_T
+        LOGICAL        EXIT            ! request to exit nicely
+        LOGICAL        QUIT            ! request for a nasty quick exit 
+        LOGICAL        READ            ! read data from file 
+        LOGICAL        WRITE           ! write data to file 
+        LOGICAL        N2              ! carry out N2 calibration 
+        REAL           UPDATE          ! time between display updates [sec]
+        CHARACTER(128) FILE_IN         ! input file 
+        CHARACTER(128) FILE_OUT        ! output file 
+        LOGICAL        CLOSED          ! output file still closed 
+        LOGICAL        DISPLAY         ! event display in HIGZ window 
+        LOGICAL        MONITOR         ! monitoring enabled 
+	logical        anal_start      ! Analysis thread started.
+      END TYPE GAN_CTRL_T 
+
+      TYPE(GAN_CTRL_T), PUBLIC :: GAN_CTRL   
+
+!-------------------------------------------------------------------------------
+!     status information other threads may need to know about 
+!-------------------------------------------------------------------------------
+      TYPE, PUBLIC :: GAN_STATUS_T
+        INTEGER EVENT                  ! events read so far 
+        REAL    RATE                   ! event rate [Hz]
+      END TYPE GAN_STATUS_T 
+
+      TYPE(GAN_STATUS_T), PUBLIC :: GAN_STATUS    
+!-------------------------------------------------------------------------------
+!     time 
+!-------------------------------------------------------------------------------
+      TYPE GAN_TIME_T 
+        REAL START     ! start of event loop [sec]
+        REAL STOP      ! end of event loop   [sec] 
+        REAL DISPLAY   ! last display time   [sec]
+      END TYPE 
+      TYPE(GAN_TIME_T) GAN_TIME  
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      CONTAINS
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GAN_ACTION
+
+!-------------------------------------------------------------------------------
+!     KUIP interface routine 
+!-------------------------------------------------------------------------------
+!	Modified:
+
+!	15/5/99 GHS
+!		Add flag to allow GPR10_action to abort starting of anaylsis
+!		thread if we don't have the disk space.
+! 	31/08/02 GHS
+!		Add a anal_start flag to indicate if an analysis thread is
+!               running. If so don't start a second analysis thread. Also don't
+!               let the input/output change.                         
+
+
+      CHARACTER(*), PARAMETER :: SRN="GAN_ACTION"
+      CHARACTER(80)           :: MSG  
+      CHARACTER(80)           :: CMD
+      INTEGER                 :: LEN 
+      INTEGER                 :: IERR 
+      CHARACTER(32)           :: THREAD
+      INTEGER                 :: NPAR     
+      INTEGER                 :: I 
+      REAL                    :: TIME           ! [seconds] 
+
+      CALL KUPATL(CMD,NPAR) 
+      CALL CLTOU(CMD)                      ! convert to upper case 
+
+!-------------------------------------------------------------------------------
+!     set display update time interval 
+!-------------------------------------------------------------------------------
+      IF (CMD.EQ."UPDATE") THEN 
+        CALL KUGETR(GAN_CTRL%UPDATE) 
+!-------------------------------------------------------------------------------
+!     input file 
+!-------------------------------------------------------------------------------
+      ELSE IF (CMD.EQ."NOINPUT") THEN 
+	if(gan_ctrl%anal_start)then
+       MSG  = 'NOT ALLOWED to change input while Analysis Thread in progress.'
+          IERR = GOS_ERROR(SRN,MSG,1) 
+	  return
+	endif
+	GAN_CTRL%READ  = .FALSE.                  ! set flag 
+      ELSE IF (CMD.EQ."INPUT") THEN 
+	if(gan_ctrl%anal_start)then
+       MSG  = 'NOT ALLOWED to change input while Analysis Thread in progress.'
+          IERR = GOS_ERROR(SRN,MSG,1) 
+	  return
+	endif
+        IF (NPAR.GE.1) THEN                       ! input file? 
+          CALL KUGETS(GAN_CTRL%FILE_IN,LEN)       ! get file name
+          GAN_CTRL%READ = .TRUE.                  ! set flag 
+        ELSE                                      ! no input file 
+          MSG  = 'Please give input file name.'
+          IERR = GOS_ERROR(SRN,MSG,1) 
+        ENDIF 
+!-------------------------------------------------------------------------------
+!     output file 
+!-------------------------------------------------------------------------------
+      ELSE IF (CMD.EQ."NOOUTPUT") THEN 
+ 	if(gan_ctrl%anal_start)then
+       MSG  = 'NOT ALLOWED to change output while Analysis Thread in progress.'
+          IERR = GOS_ERROR(SRN,MSG,1) 
+	  return
+	endif
+        GAN_CTRL%WRITE = .FALSE.                          ! disable output 
+      ELSE IF (CMD.EQ."OUTPUT") THEN                       ! enable output?
+ 	if(gan_ctrl%anal_start)then
+       MSG  = 'NOT ALLOWED to change output while Analysis Thread in progress.'
+          IERR = GOS_ERROR(SRN,MSG,1) 
+	  return
+	endif
+        IF (NPAR.GE.1) THEN                               ! input file? 
+          CALL KUGETS(GAN_CTRL%FILE_OUT,LEN)              ! get file name
+          GAN_CTRL%WRITE = .TRUE.                         ! set flag 
+        ELSE                                              ! automatic file name 
+          IF (GDF_RUN%VALID) THEN                         ! valid run number?
+            GAN_CTRL%WRITE = .TRUE.                       ! set flag 
+            GAN_CTRL%FILE_OUT = "dir$data:gt000000.fz"    ! default file name
+            WRITE(GAN_CTRL%FILE_OUT(12:17),'(I6)') &      ! enter six digit  
+              GDF_RUN%RUN                                 !   run number 
+            DO I=12,17                                    ! in run number
+              IF (GAN_CTRL%FILE_OUT(I:I).EQ.' ') THEN     ! look for blanks 
+                GAN_CTRL%FILE_OUT(I:I) = '0'              ! remove blanks 
+              ENDIF 
+            END DO  
+            PRINT*,GAN_CTRL%FILE_OUT
+          ELSE                                            ! no run number
+            GAN_CTRL%WRITE = .FALSE.                      ! disable write 
+          ENDIF 
+        ENDIF 
+!-------------------------------------------------------------------------------
+!     start a new analysis thread
+!-------------------------------------------------------------------------------
+!	15/5/99 GHS
+!		Add flag to allow GPR10_action to abort starting of anaylsis
+!		thread if we don't have the disk space.
+
+      ELSE IF (CMD.EQ.'START') THEN                             
+ 	if(gan_ctrl%anal_start)then
+       MSG  = 'Analysis Thread already in progress.'
+          IERR = GOS_ERROR(SRN,MSG,1) 
+	  return
+	endif
+ 	if(gpr10_ctrl%enough_disk)then
+	  CALL GOS_CREATE_THREAD(& 
+          GOS_THREAD%ANALYSIS,&
+          GAN_START,&
+          IERR)
+	else
+	  IERR = GOS_ERROR(SRN,"Start of Analysis thread aborted by &
+	  & lack of disk space.",1)
+	  return
+	endif
+!-------------------------------------------------------------------------------
+!     stop analysis thread the nice way  
+!-------------------------------------------------------------------------------
+      ELSE IF (CMD.EQ.'STOP') THEN
+ 	if(.not.gan_ctrl%anal_start)then
+       MSG  = 'No Analysis Thread in progress.'
+          IERR = GOS_ERROR(SRN,MSG,1) 
+	  return
+	endif
+        GAN_CTRL%EXIT = .TRUE.
+!-------------------------------------------------------------------------------
+!     stop a thread, regardless of 
+!-------------------------------------------------------------------------------
+      ELSE IF (CMD.EQ.'KILL') THEN
+ 	if(.not.gan_ctrl%anal_start)then
+       MSG  = 'No Analysis Thread in progress.'
+          IERR = GOS_ERROR(SRN,MSG,1) 
+	  return
+	endif
+        GAN_CTRL%QUIT   = .TRUE.
+!-------------------------------------------------------------------------------
+!     print current graphics 
+!-------------------------------------------------------------------------------
+      ELSE IF (CMD.EQ.'PRINT') THEN
+        TIME = SECNDS(0.0) 
+        CALL GHI_PRINT("granite.ps",IERR) 
+        PRINT*,"Time to create file [msec]",NINT(1E3*SECNDS(TIME))  
+        TIME = SECNDS(0.0) 
+        CALL KUEXEC("SHELL PRINT/QUEUE=CPS GRANITE.PS ")
+        PRINT*,"Time to submit job  [msec]",NINT(1E3*SECNDS(TIME))  
+!-------------------------------------------------------------------------------
+!    whoops, ....      
+!-------------------------------------------------------------------------------
+      ELSE
+        MSG = "Unknown command "//CMD 
+        IERR = GOS_ERROR(SRN,TRIM(MSG),1)
+        RETURN 
+      ENDIF 
+
+      END SUBROUTINE GAN_ACTION
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GAN_EVENT(IERR) 
+!-------------------------------------------------------------------------------
+!     get next event from file or from buffer manager
+!-------------------------------------------------------------------------------
+!     IERR=0   data available 
+!          1   no data yet, please try again later 
+!          2   end of run or end of file
+!-------------------------------------------------------------------------------
+      INTEGER, INTENT(OUT) :: IERR 
+      REAL                 :: TIME 
+      CHARACTER,PARAMETER  :: SRN = "GAN_EVENT"
+!-------------------------------------------------------------------------------
+! 
+!-------------------------------------------------------------------------------
+      IERR = 0 
+      IF (GAN_CTRL%READ) THEN 
+        CALL GDF$READ(10,' ',IERR)                     ! read from unit 10
+        IF (IERR.EQ.1) IERR=2                          ! indicate end of run
+      ELSE
+        DO 
+          CALL GBM_RETRIEVE(GDF_EV10,GDF_FR10,IERR)    ! fetch event
+          IF (IERR.EQ.2) THEN                          ! final end of data? 
+            RETURN                                     !   done ...  
+          ELSE IF (IERR.EQ.1) THEN                     ! no more data yet?
+             CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)   ! release CERNLIB    
+             IF (IERR.NE.0) THEN                       !   not released?
+               IERR = 1                                !   flag no data
+               RETURN
+             ELSE                                      ! CERNLIB released 
+               CALL GOS_WAIT(0.5)                      !   wait a bit 
+               TIME = SECNDS(0.0)                      ! start clock 
+               DO WHILE (SECNDS(TIME).LT.5.0)          !   until time out 
+                 CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR) !   try to release lock 
+                 IF (IERR.EQ.0) THEN                   !   done 
+                   IERR = 1                            !   flag no data 
+                   RETURN                              !   all is well
+                 ENDIF 
+                 CALL GOS_WAIT(0.5)                    !   wait again  
+               ENDDO                                   !   try again 
+               IERR = GOS_ERROR(SRN,"No Cernlib lock.",1) 
+               RETURN 
+             ENDIF 
+          ELSE                                         ! we have data 
+            RETURN                                     !   return immediately   
+          ENDIF 
+        ENDDO 
+      ENDIF 
+
+      END SUBROUTINE GAN_EVENT 
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GAN_EXIT(IERR) 
+!-------------------------------------------------------------------------------
+!     deal with end of run tasks 
+!-------------------------------------------------------------------------------
+      CHARACTER(LEN=*),PARAMETER :: SRN =  "GAN_EXIT"
+      INTEGER IERR
+      INTEGER I 
+!-------------------------------------------------------------------------------
+!     N2 calibration 
+!-------------------------------------------------------------------------------
+      IERR = 0 
+      IF (GAN_CTRL%N2) THEN 
+        CALL HPLZON(2,2,1,' ') 
+        DO I=1,SIZE(GIM_IMAGE(GTE_TELE_10M)%ADC_SIG) 
+          CALL GNI_FIND_PEAK(& 
+          GTE_TELE_10M,I,200.,'V',IERR) 
+          CALL IUWK(0,1) 
+        ENDDO 
+        CALL HPLZON(1,1,1,' ') 
+        IERR = 0 
+        CALL GDF$OPEN(10,GAN_CTRL%FILE_IN,'R',IERR)         ! R=readonly
+        IF (IERR.NE.0) RETURN 
+        DO    
+          CALL GDF$READ(10,' ',IERR)                    ! read from unit 10
+          IF (IERR.EQ.1) EXIT 
+          IF (IERR.NE.0) RETURN 
+          CALL GIM_CALIBRATE(GDF_EV10,IERR)
+          CALL GNI_ENTER(& 
+            GTE_TELE_10M, &
+            GIM_IMAGE(GTE_TELE_10M)%ADC_SIG, &
+            GIM_IMAGE(GTE_TELE_10M)%STATUS, &
+            IERR) 
+        ENDDO  
+        CALL GDF$CLOSE(10,IERR)                           ! close file 
+        CALL GNI_GAIN(GTE_TELE_10M,IERR) 
+        CALL GNI_DISPLAY(GTE_TELE_10M,IERR) 
+        CALL IUWK(0,1) 
+
+        CALL GIM_OPEN(10,"granite.rz","N",IERR)            ! open new file 
+        CALL GIM_WRITE(GDF_RUN%RUN,GTE_TELE_10M,IERR)      ! write calibration 
+        CALL GIM_CLOSE(IERR)                               ! close file  
+
+      END IF 
+
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+      CALL GIM_EXIT(GIM_IMAGE_10M)
+
+!-------------------------------------------------------------------------------
+!     release CERNLIBS 
+!-------------------------------------------------------------------------------
+      CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)
+      IF (IERR.NE.0) THEN 
+        IERR = GOS_ERROR(SRN,"Failed to release CERNLIB mutex.",IERR) 
+        RETURN 
+      ENDIF 
+
+
+      END SUBROUTINE GAN_EXIT  
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GAN_FIRST(IERR) 
+
+!-------------------------------------------------------------------------------
+!     called after the first event is read 
+!-------------------------------------------------------------------------------
+      CHARACTER(*), PARAMETER :: SRN="GAN_FIRST"
+
+      INTEGER IERR 
+
+!---- initialisation on first event   
+      IF (GDF_RUN%NEW) THEN                               ! run info?
+        CALL GCA_DEFINE(GDF_RUN%RUN,IERR)                 ! camera geometry 
+        CALL GMO_RATE("I") 
+        CALL GTR_MONITOR("RESET")                         ! reset trigger stats 
+      ELSE 
+        IERR = GOS_ERROR(SRN,"No run information.",1) 
+        RETURN
+      ENDIF 
+
+      IF (GDF_EV10%NEW) THEN                             ! 10m event?
+        CALL GIM_INIT(GTE_TELE_10M,GDF_EV10%NADC)        ! reset calibration
+        CALL GNI_INIT(GTE_TELE_10M,GDF_EV10%NADC,IERR)   ! init N2 calibration 
+      ELSE 
+        IERR = GOS_ERROR(SRN,"No 10 m event.",2) 
+        RETURN
+      ENDIF 
+
+      END SUBROUTINE GAN_FIRST 
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GAN_NEXT(IERR) 
+!-------------------------------------------------------------------------------
+!     called for every event  
+!-------------------------------------------------------------------------------
+!	Modified:
+!	31/3/98 GHS	Add DISPLAY variable so we don't repeatedly write out
+!			the "too busy to display" message.        
+
+      INTEGER IERR 
+
+      CHARACTER(*), PARAMETER :: SRN="GAN_NEXT"
+
+!---- timing and rate measurements 
+      INTEGER, PARAMETER :: NT=6               ! number of measurements
+      INTEGER  TOTAL(NT)                       ! sum(count) 
+      INTEGER  COUNT(NT)                       ! clock ticks 
+      INTEGER  COUNT_MAX                       ! max clock count 
+      INTEGER  RATE                            ! clock rate [Hz]
+      REAL     T_EVENT(NT)
+      LOGICAL  display 
+      DATA     display / .TRUE. / 
+      LOGICAL, POINTER      :: STATUS(:)       ! .true. = consider this tube
+      LOGICAL, POINTER      :: BOUNDARY(:)     ! .true. = next to bright tubes
+      LOGICAL, POINTER      :: BRIGHT(:)       ! .true. = above high threshold
+      INTEGER, POINTER      :: COLOR(:)
+      INTEGER  N, I,I1,I2 
+      INTEGER  U,V 
+      INTEGER  INTENSITY          !sum of calibrated ADC counts in an image
+      TYPE(GPA_PARA_T)  :: PARIM
+      CHARACTER(LEN=80) :: MSG 
+      LOGICAL           :: TEST(6) 
+!-------------------------------------------------------------------------------
+!     monitor data quality, if time ...  
+!-------------------------------------------------------------------------------
+      IF (GBM_STATUS%DEPTH.GT.GBM_EV10_HIG) THEN
+        IF (GAN_CTRL%MONITOR) THEN 
+          GAN_CTRL%MONITOR = .FALSE.
+          IERR = GOS_ERROR(SRN,"Too busy to monitor data quality.",0)  
+        ELSE 
+          IF (MOD(GBM_STATUS%DEPTH,500).EQ.0) THEN  
+            WRITE(*,MSG) "Event buffer depth now at ",GBM_STATUS%DEPTH 
+            IERR = GOS_ERROR(SRN,TRIM(MSG),0)  
+          ENDIF 
+        ENDIF 
+        RETURN 
+      ELSE IF (GBM_STATUS%DEPTH.LT.GBM_EV10_LOW) THEN
+        IF (.NOT.GAN_CTRL%MONITOR) THEN 
+          GAN_CTRL%MONITOR = .TRUE.
+          IERR = GOS_ERROR(SRN,"Starting to monitor data quality.",0)  
+        ENDIF 
+      ENDIF 
+!-------------------------------------------------------------------------------
+!
+!-------------------------------------------------------------------------------
+        IF (GDF_EV10%NEW) THEN                    ! new event?
+          CALL GIM_CALIBRATE(GDF_EV10,IERR)       ! pedestal, NSB calculation 
+          CALL GMO_RATE("F")                      ! monitor event rate 
+          CALL GTR_MONITOR                        ! monitor trigger 
+        ENDIF 
+!-------------------------------------------------------------------------------
+!     all data present? 
+!-------------------------------------------------------------------------------
+      TEST(1) = ASSOCIATED(GIM_IMAGE(GIM_IMAGE_10M)%STATUS) 
+      TEST(2) = ASSOCIATED(GIM_IMAGE(GIM_IMAGE_10M)%ADC_SIG) 
+      TEST(3) = ASSOCIATED(GIM_IMAGE(GIM_IMAGE_10M)%ADC_NSB) 
+      TEST(4) = ASSOCIATED(GCA_CAMERA(GCA_CAMERA_10M)%UPOS) 
+      TEST(5) = ASSOCIATED(GCA_CAMERA(GCA_CAMERA_10M)%VPOS) 
+      TEST(6) = ASSOCIATED(GCA_CAMERA(GCA_CAMERA_10M)%PIXEL) 
+      IF (.NOT.ALL(TEST,1)) THEN 
+	IERR = GOS_ERROR(SRN,"Input data incomplete",0)  
+        RETURN  
+      ENDIF 
+!-------------------------------------------------------------------------------
+!     create logicals for boundar,bright,and pixel status 
+!-------------------------------------------------------------------------------
+      I1 = LBOUND(GIM_IMAGE(GIM_IMAGE_10M)%ADC_SIG,1) 
+      I2 = UBOUND(GIM_IMAGE(GIM_IMAGE_10M)%ADC_SIG,1) 
+      IF (ABS(I2-I1).LT.100) THEN 
+	IERR = GOS_ERROR(SRN,"Too few ADC channels.",0)  
+        RETURN  
+      ENDIF 
+
+      ALLOCATE (BOUNDARY(I1:I2))
+      ALLOCATE (BRIGHT  (I1:I2))
+      ALLOCATE (STATUS  (I1:I2))
+       
+!-------------------------------------------------------------------------------
+!     image parametrisation 
+!-------------------------------------------------------------------------------
+       GPA_PARA(GTE_TELE_10M)%VALID = .FALSE.          ! last event is obsolete 
+
+       STATUS = & 
+        (.NOT.BTEST(GIM_IMAGE(GIM_IMAGE_10M)%STATUS,GIM_STATUS_NSB)).AND. &   
+        (.NOT.BTEST(GIM_IMAGE(GIM_IMAGE_10M)%STATUS,GIM_STATUS_IGNORE))  
+
+       STATUS(MAX(I1,380):I2) = .FALSE.                ! mask out outer camera   
+
+       CALL GPA_CLEAN_IMAGE(2.25,4.25,&
+           GIM_IMAGE(GIM_IMAGE_10M)%ADC_NSB,&
+           GIM_IMAGE(GIM_IMAGE_10M)%ADC_SIG,&
+           GCA_CAMERA(GCA_CAMERA_10M)%UPOS ,&
+           GCA_CAMERA(GCA_CAMERA_10M)%VPOS ,&
+           GCA_CAMERA(GCA_CAMERA_10M)%PIXEL,&
+           STATUS,BOUNDARY,BRIGHT,IERR)
+
+      STATUS=BOUNDARY.OR.BRIGHT 
+
+      INTENSITY = SUM(GIM_IMAGE(GIM_IMAGE_10M)%ADC_SIG,1,STATUS)
+!---- 
+      IF (INTENSITY.GT.100) THEN
+        CALL GPA_PARAMETRIZE(&
+          GIM_IMAGE(GIM_IMAGE_10M)%ADC_SIG,&
+          GCA_CAMERA(GCA_CAMERA_10M)%XDEG ,&
+          GCA_CAMERA(GCA_CAMERA_10M)%YDEG ,&
+          STATUS, PARIM, IERR) 
+        IF (IERR.EQ.0) THEN 
+          GPA_PARA(GTE_TELE_10M) = PARIM
+        END IF 
+      ENDIF
+
+
+
+!-------------------------------------------------------------------------------
+!     add color ...... 
+!-------------------------------------------------------------------------------
+      WHERE (BRIGHT)                         
+        GIM_IMAGE(GIM_IMAGE_10M)%COLOR = GHI_RED 
+      ELSEWHERE (BOUNDARY)
+        GIM_IMAGE(GIM_IMAGE_10M)%COLOR = GHI_GREEN 
+      ELSEWHERE 
+        GIM_IMAGE(GIM_IMAGE_10M)%COLOR = GHI_BLUE               ! default  
+      ENDWHERE
+!-------------------------------------------------------------------------------
+!     graphics display  
+!-------------------------------------------------------------------------------
+!     IF (SECNDS(GAN_TIME%DISPLAY).GT.GAN_CTRL%UPDATE) THEN 
+!!      IF (gan_ctrl%read.or. (.not.gan_ctrl%read.and. &
+	IF (SECNDS(GAN_TIME%DISPLAY).GT.GAN_CTRL%UPDATE) THEN 
+        IF (GBM_STATUS%DEPTH.LT.GBM_EV10_LOW) THEN  
+
+        CALL GDI_UPDATE 
+
+!>>>>>>>
+          IF (.FALSE..AND.GAN_CTRL%DISPLAY) THEN                ! display events?
+!>>>>>>>
+            CALL HPLOPT('SQR', 1)                      ! 
+            CALL HPLSET('YMGU',0.50)
+            CALL HPLSET('YMGL',8.00)
+            CALL GIM_SHOW_IMAGE(GIM_IMAGE_10M) 
+!           IF (INTENSITY.GT.100) THEN    ! leave out small events to reduce rate
+!             CALL GPA_ELLIPSE(PARIM,"",IERR)
+!           ENDIF 
+
+            CALL GMO_SHOW_SRATE(GIM_IMAGE_10M)
+            IF(.NOT.GIM_CTRL%PED_VARS) CALL GTR_PLOT_PST  ! display pixels fired 
+            CALL GMO_RATE("S") 
+          ELSE IF (GAN_CTRL%MONITOR) THEN 
+            CALL HPLOPT('NSQR', 1) 
+            CALL HPLSET('YMGU',1.00)
+            CALL HPLSET('YMGL',2.00)
+            CALL GIM_SHOW_PLOTS(GIM_IMAGE_10M)  
+            CALL GMO_RATE("D") 
+          ENDIF 
+          CALL IUWK(0,1) 
+	  if(.not.display)then
+	          IERR = GOS_ERROR(SRN,"Resuming display of event.",0)  
+	  endif
+	  display=.true.
+        ELSE
+		if(display)then
+	          IERR = GOS_ERROR(SRN,"Too busy to display event.",0)  
+		endif
+ 	  	display=.false.
+        ENDIF 
+        GAN_TIME%DISPLAY = SECNDS(0.0) 
+      ENDIF 
+
+!-------------------------------------------------------------------------------
+! 
+!-------------------------------------------------------------------------------
+	if(gan_ctrl%read)then	  			!pause for update time
+!!            CALL GOS_WAIT(gan_ctrl%update)            !   wait a bit  
+              CALL GOS_WAIT(0.5) 
+	endif
+				
+      DEALLOCATE (BOUNDARY,BRIGHT,STATUS)
+
+      END SUBROUTINE GAN_NEXT 
+
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+      SUBROUTINE GAN_START
+
+!-------------------------------------------------------------------------------
+!     first routine that is called when the producer thread is created 
+!-------------------------------------------------------------------------------
+! Modified:
+
+!	11/09/01 GHS: Moved call to GBM_FLUSH outside of the
+!		IF(gan_ctrl%write) statment so that it is called at the end of
+!		all runs, even those not writing out data like the TEST runs.
+!       31/08/02 GHS
+!		Add a anal_start flag to indicate if an Analysis thread is in
+!		progress. Use that flag to prevent us from generating a second
+!		such thread if one is already in progress.
+                         
+
+      INTEGER IERR 
+      INTEGER STATUS 
+      REAL    TIME                                  ! CERNLIB use time [sec]
+      CHARACTER(*), PARAMETER :: SRN="GAN_START"
+      INTEGER NTRY 
+!-------------------------------------------------------------------------------
+!     request access to CERNLIBS 
+!-------------------------------------------------------------------------------
+      gan_ctrl%anal_start=.true.   !Thread exists.
+	CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)
+      IF (IERR.NE.0) THEN 
+        IERR = GOS_ERROR(SRN,"No access to CERNLIBs.",IERR) 
+        gan_ctrl%anal_start=.false.
+        RETURN 
+      ENDIF 
+!-------------------------------------------------------------------------------
+!     startup phase before first event 
+!-------------------------------------------------------------------------------
+      IERR = GOS_ERROR(SRN,"Analysis thread starting up.",0) 
+      GAN_TIME%DISPLAY  = SECNDS(0.0) - 10.        
+      GAN_CTRL%CLOSED   = .TRUE. 
+      GAN_CTRL%QUIT     = .FALSE.                             ! reset flag 
+      GAN_CTRL%EXIT     = .FALSE.                             ! reset flag 
+!-------------------------------------------------------------------------------
+!     open file and read first event 
+!-------------------------------------------------------------------------------
+      IF (GAN_CTRL%READ) THEN 
+        CALL GDF$OPEN(10,GAN_CTRL%FILE_IN,'R',IERR)            ! R=readonly
+        IF (IERR.NE.0) THEN                                    ! file open?  
+          IERR = GOS_ERROR(SRN,"Can not open input file.",IERR) 
+	  gan_ctrl%anal_start=.false.
+         RETURN                          
+        ENDIF 
+      ENDIF 
+!-------------------------------------------------------------------------------
+!     get first event 
+!-------------------------------------------------------------------------------
+      IERR = 1                                     ! pretent no event 
+      DO WHILE(IERR.NE.0)                          ! while no event event 
+        CALL GAN_EVENT(IERR)                       !   try to get event 
+      ENDDO  
+      CALL GAN_FIRST(IERR)                         ! first event specials
+!-------------------------------------------------------------------------------
+!     read and process events 
+!-------------------------------------------------------------------------------
+      GAN_CTRL%UPDATE  = 5.0 
+      GAN_CTRL%DISPLAY = .TRUE.
+      GAN_TIME%START   = SECNDS(0.0)      
+      TIME             = SECNDS(0.0)     
+
+      EVENT_LOOP : DO                                     ! event loop  
+
+!----   process next event 
+        CALL GAN_NEXT(IERR)                               ! analize event 
+        IERR = 0                                          ! ignore any errors 
+
+!----   file IO for events 
+        IF (GAN_CTRL%WRITE) THEN                          ! write to disk?
+          IF (GAN_CTRL%CLOSED) THEN                       ! file opned yet?
+            CALL GDF$OPEN(20,GAN_CTRL%FILE_OUT,'W',IERR)  ! open file, W=write
+            IF (IERR.NE.0) THEN                           ! file open?  
+              IERR = GOS_ERROR(SRN,"Can not open output file.",IERR) 
+	      gan_ctrl%anal_start=.false.
+              RETURN                          
+            ENDIF 
+            GAN_CTRL%CLOSED = .FALSE.                     ! remember 
+          ENDIF 
+          CALL GDF$WRITE(20,' ',IERR)                     ! write data 
+          IF (IERR.NE.0) THEN                             ! worked ok?  
+            IERR = GOS_ERROR(SRN,"Failed to write event.",IERR) 
+	    gan_ctrl%anal_start=.false.
+            RETURN                          
+          ENDIF 
+        ENDIF 
+
+!----   check for request to abort run or end run 
+        IF (GAN_CTRL%QUIT) THEN                           ! quit requested?
+          IERR = GOS_ERROR(SRN,"Request to abort run.",1) 
+          gan_ctrl%anal_start=.false.
+          RETURN                          
+        ENDIF 
+        IF (GAN_CTRL%EXIT)EXIT                           ! exit requested
+
+!----   temporarily release CERNLIBs for other threads 
+        IF (SECNDS(TIME).GT.1.0) THEN                     ! time up?
+          CALL GOS_UNLOCK(GOS_MUTEX_CERNLIB,IERR)         ! release CERNLIBS 
+          IF (IERR.NE.0) THEN 
+            IERR = GOS_ERROR(SRN,"Failed to release CERNLIBS.",IERR)
+          ELSE                                             ! now get them back
+            NTRY = 0                                       ! reset count 
+            DO WHILE(IERR.NE.0)                            ! several tries  
+              NTRY = NTRY + 1                              ! count attempts 
+              CALL GOS_WAIT(0.05*NTRY)                     ! first wait 
+              CALL GOS_LOCK(GOS_MUTEX_CERNLIB,IERR)        ! try to get them
+              IF (NTRY.GT.10) THEN                         ! too many tries 
+                IERR = GOS_ERROR(SRN,"Failed to acquire CERNLIBs,",100)
+	        gan_ctrl%anal_start=.false.
+                RETURN                                     ! give up  
+              ENDIF 
+            ENDDO                                           ! try again 
+            TIME = SECNDS(0.0)                             ! remember time 
+          ENDIF  
+        ENDIF 
+
+!----   get the next event 
+        IERR = 1                                            ! pretend no event 
+        DO WHILE (IERR.NE.0)                                ! try to get event
+          CALL GAN_EVENT(IERR)                              ! get next event 
+          IF (IERR.EQ.2) EXIT EVENT_LOOP                    ! no more data 
+        ENDDO  
+
+      ENDDO EVENT_LOOP       
+!-------------------------------------------------------------------------------
+!     termination 
+!-------------------------------------------------------------------------------
+      IF (GAN_CTRL%READ) THEN                             ! read from to disk?
+        CALL GDF$CLOSE(10,IERR)                           ! close file 
+        IERR = GOS_ERROR(SRN,"Input files closed.",IERR) 
+      ENDIF 
+      IF (GAN_CTRL%WRITE) THEN                            ! write to disk?
+        CALL GDF$CLOSE(20,IERR)                           ! close file 
+        IERR = GOS_ERROR(SRN,"Output files closed.",IERR) 
+!**********************************************************************
+!	The call to gbm_flush (see below) was here ghs 11/09/01        
+!**********************************************************************
+      ENDIF 
+		! GBM_INIT should be called even when we are not writing data. 
+		! At the end of test runs for example. GHS 11/09/01
+      CALL GBM_INIT(IERR) ! SMB  reinitialize buffer flushing 
+                          ! parameters ready for start of next run
+
+      CALL GAN_EXIT(IERR)   
+      IERR = GOS_ERROR(SRN,"Analysis thread terminates.",0) 
+      gan_ctrl%anal_start=.false.
+
+      END SUBROUTINE GAN_START 
+
+      END MODULE GAN
+
