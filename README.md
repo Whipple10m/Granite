@@ -7,12 +7,12 @@ This is a version I downloaded and used to study the DAQ, and is incomplete, mis
 
 ## Screenshots of GUI 
 
-![Window selection](https://github.com/Whipple10m/Track/blob/main/Assets/granite1.png)
+![Window selection](https://github.com/Whipple10m/Granite/blob/main/Assets/granite1.png)
 
-![Command entry and log](https://github.com/Whipple10m/Track/blob/main/Assets/granite2.png)
+![Command entry and log](https://github.com/Whipple10m/Granite/blob/main/Assets/granite2.png)
 
-![Run control](https://github.com/Whipple10m/Track/blob/main/Assets/granite3.png)
+![Run control](https://github.com/Whipple10m/Granite/blob/main/Assets/granite3.png)
 
-![Display control](https://github.com/Whipple10m/Track/blob/main/Assets/granite4.png)
+![Display control](https://github.com/Whipple10m/Granite/blob/main/Assets/granite4.png)
 
-![Histogram](https://github.com/Whipple10m/Track/blob/main/Assets/granite5.png)
+![Histogram](https://github.com/Whipple10m/Granite/blob/main/Assets/granite5.png)
